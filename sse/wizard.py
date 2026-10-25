@@ -101,8 +101,11 @@ def interactive(account_default):
     return render(v)
 
 
-def from_toml(toml_path):
-    """舊版（config.toml + secrets/ 底下的密碼檔）轉成 config.yml。"""
+def from_toml(toml_path, home):
+    """舊版（config.toml + secrets/ 底下的密碼檔）轉成 config.yml。
+
+    home：照片擁有者的家目錄。舊版的路徑寫成 ~/sse/...，安裝程式是 root 執行的，不能用 root 的 ~。
+    """
     import tomllib
 
     with open(toml_path, "rb") as f:
@@ -110,8 +113,10 @@ def from_toml(toml_path):
     base = os.path.dirname(toml_path)
 
     def secret(p):
-        p = os.path.expanduser(p or "")
-        if p and not os.path.isabs(p):
+        p = p or ""
+        if p == "~" or p.startswith("~/"):
+            p = home + p[1:]
+        elif not os.path.isabs(p):
             p = os.path.join(base, p)
         with open(p, encoding="utf-8") as f:
             return f.read().strip()

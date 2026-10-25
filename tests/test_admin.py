@@ -129,20 +129,57 @@ class ConfigFile(unittest.TestCase):
         self.assertIn("chmod 600", str(cm.exception))
 
     def test_migrate_private_version(self):
+        # 舊版的路徑寫成 ~/sse/...：要用照片擁有者的家目錄，不是執行安裝的 root 的
+        home = os.path.join(self.d, "home")
+        os.makedirs(os.path.join(home, "sse", "secrets"))
+        with open(os.path.join(home, "sse", "secrets", "dsm_password"), "w") as f:
+            f.write("pw\n")
         os.makedirs(os.path.join(self.d, "secrets"))
-        for name, v in (("dsm_password", "pw"), ("llm_api_key", "sk-1")):
-            with open(os.path.join(self.d, "secrets", name), "w") as f:
-                f.write(v)
+        with open(os.path.join(self.d, "secrets", "llm_api_key"), "w") as f:   # 相對於 config.toml 的路徑
+            f.write("sk-1")
         with open(os.path.join(self.d, "config.toml"), "w") as f:
-            f.write('[synology]\naccount = "bob"\npassword_file = "secrets/dsm_password"\nthumb_size = "m"\n'
-                    '[llm]\nbase_url = "https://llm/v1"\napi_key_file = "secrets/llm_api_key"\nocr_model = "g4"\n'
-                    '[index]\ndb = "x"\nocr = "all"\n[search]\nmin_score = 0.7\n')
-        wizard.write_config(self.path, wizard.from_toml(os.path.join(self.d, "config.toml")))
+            # 舊版會用到的欄位都放進來：每一個都要在範本裡找得到位置
+            f.write('[synology]\nurl = "https://127.0.0.1:5001"\naccount = "bob"\npassword_file = "~/sse/secrets/dsm_password"\n'
+                    'verify_tls = false\nthumb_size = "m"\nocr_thumb_size = "sm"\n'
+                    '[llm]\nbase_url = "https://llm/v1"\napi_key_file = "secrets/llm_api_key"\nembed_model = "e2"\n'
+                    'ocr_model = "g4"\n[index]\ndb = "x"\nocr = "all"\n'
+                    '[search]\nsocket = "/run/sse-engine/engine.sock"\ndims = 512\nmin_score = 0.7\nmax_drop = 0.08\n'
+                    'text_min_score = 0.76\n')
+        wizard.write_config(self.path, wizard.from_toml(os.path.join(self.d, "config.toml"), home))
         c = cfgm.load(self.path)
         self.assertEqual((c["synology"]["account"], c["synology"]["password"]), ("bob", "pw"))
         self.assertEqual((c["llm"]["embed_api_key"], c["llm"]["ocr_api_key"], c["llm"]["ocr_model"]), ("sk-1", "sk-1", "g4"))
         self.assertEqual(c["llm"]["ocr_extra_body"], {"reasoning_effort": "none"})   # 舊版的 OCR 行為不變
-        self.assertEqual(c["search"]["min_score"], 0.7)
+        self.assertEqual((c["search"]["min_score"], c["search"]["text_min_score"]), (0.7, 0.76))
+        self.assertEqual((c["synology"]["thumb_size"], c["synology"]["ocr_thumb_size"], c["llm"]["embed_model"]),
+                         ("m", "sm", "e2"))
+
+    def test_interactive_wizard(self):
+        # 設定精靈填的每個欄位都要在範本裡找得到位置，填完要是合法的設定
+        answers = iter(["alice", "http://gpu:8080/v1", "", "y", "n", "http://ocr:11434/v1", "gemma3:12b"])
+        secrets = iter(["pw 123", "sk-e", "sk-o"])
+        with mock.patch("builtins.input", lambda prompt="": next(answers)), \
+                mock.patch("getpass.getpass", lambda prompt="": next(secrets)), \
+                mock.patch("builtins.print"):
+            text = wizard.interactive("alice")
+        wizard.write_config(self.path, text)
+        c = cfgm.load(self.path)
+        self.assertEqual((c["synology"]["account"], c["synology"]["password"], c["llm"]["embed_model"]),
+                         ("alice", "pw 123", "embeddinggemma-2"))
+        self.assertEqual((c["llm"]["embed_api_key"], c["llm"]["ocr_base_url"], c["llm"]["ocr_api_key"],
+                          c["llm"]["ocr_model"]), ("sk-e", "http://ocr:11434/v1", "sk-o", "gemma3:12b"))
+
+    def test_migrate_failure_is_explained(self):
+        import pwd
+        with open(os.path.join(self.d, "config.toml"), "w") as f:
+            f.write('[synology]\naccount = "bob"\npassword_file = "~/nope/dsm_password"\n[llm]\nbase_url = "x"\n')
+        args = argparse.Namespace(import_config=None)
+        for dry in (True, False):   # dry-run 也要真的轉換一次，才能事先發現問題
+            with self.assertRaises(ctl.Abort) as cm:
+                ctl.ensure_config(args, "bob", pwd.getpwuid(os.getuid()), self.d, dry)
+            self.assertIn("config.toml 轉換失敗", str(cm.exception))
+            self.assertIn("nope/dsm_password", str(cm.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "config.yml")))
 
 
 class UninstallPrompt(unittest.TestCase):

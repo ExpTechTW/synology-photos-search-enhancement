@@ -27,6 +27,7 @@ import ssl
 import string
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -651,28 +652,45 @@ def ensure_config(args, user, pw, data_dir, dry_run):
     if os.path.exists(path) and not args.import_config:
         load_config(path)
         return path, "沿用 %s" % path
-    if dry_run:
-        if args.import_config:
-            return path, "會從 %s 匯入，寫到 %s" % (args.import_config, path)
-        if os.path.exists(os.path.join(data_dir, "config.toml")):
-            return path, "會從舊版的 config.toml 轉換，寫到 %s" % path
-        return path, "會建立 %s" % path
+    old_toml = os.path.join(data_dir, "config.toml")
     if args.import_config:
-        with open(args.import_config, encoding="utf-8") as f:
-            text = f.read()
+        try:
+            with open(args.import_config, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            raise Abort("讀不到 %s：%s" % (args.import_config, e))
         how = "從 %s 匯入" % args.import_config
-    elif os.path.exists(os.path.join(data_dir, "config.toml")):
-        text = wizard.from_toml(os.path.join(data_dir, "config.toml"))
+    elif os.path.exists(old_toml):
+        try:
+            text = wizard.from_toml(old_toml, pw.pw_dir)
+        except (OSError, KeyError, ValueError) as e:   # tomllib 的格式錯誤也是 ValueError
+            raise Abort("舊版的 %s 轉換失敗（%s: %s）；可以自己寫好 config.yml 放在 %s，或用 --from-config 指定"
+                        % (old_toml, type(e).__name__, e, data_dir))
         how = "從舊版的 config.toml 轉換"
+    elif dry_run:
+        return path, "會建立 %s" % path
     elif sys.stdin.isatty():
         text = wizard.interactive(user)
         how = "設定精靈"
     else:
         wizard.write_config(path, wizard.render({("synology", "account"): user}), pw.pw_uid, gid)
         raise Abort("已建立設定檔範本 %s：填好 DSM 密碼與模型服務後，再執行一次安裝：\n    %s" % (path, INSTALL_CMD))
+    if dry_run:
+        check_config_text(text)   # 實際轉換、檢查過，只是不寫入
+        return path, "會%s，寫到 %s" % (how, path)
     wizard.write_config(path, text, pw.pw_uid, gid)
     load_config(path)
     return path, "%s，寫到 %s" % (how, path)
+
+
+def check_config_text(text):
+    d = tempfile.mkdtemp(prefix="sse-check.")
+    try:
+        p = os.path.join(d, "config.yml")
+        wizard.write_config(p, text)
+        load_config(p)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ── 共用流程 ────────────────────────────────────────────────────────────

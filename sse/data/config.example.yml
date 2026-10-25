@@ -32,6 +32,7 @@ ocr:
   model: ""                          # e.g. gemma3:12b (Ollama), gpt-4o-mini (OpenAI)
   # base_url: ""                     # empty = same server (and API key) as embedding / 空白 = 跟 embedding 同一個服務
   # api_key: ""
+  # image_size: xl                   # thumbnail sent for OCR: xl (default, reads small text) or m / 送去 OCR 的縮圖
   # extra_body: {}                   # extra request fields, e.g. {reasoning_effort: none} for thinking models
 
 search:
