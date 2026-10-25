@@ -602,10 +602,13 @@ def nginx_worker_user():
     return None, None
 
 
-def can_connect_as(path, user):
-    code = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(3)\ns.connect(sys.argv[1])"
-    rc, _ = run_as(user, [sys.executable, "-I", "-c", code, path], timeout=10)
-    return rc == 0
+def connect_error_as(path, user):
+    """以 user 的身分連 unix socket：連得上回傳 None，否則回傳原因。用的是本程式的 Python，所以也一併確認了
+    user 執行得了它（filter 不用它，但索引器、搜尋服務會）。"""
+    code = ("import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(3)\n"
+            "try:\n    s.connect(sys.argv[1])\nexcept OSError as e:\n    sys.exit(str(e))")
+    rc, out = run_as(user, [sys.executable, "-I", "-c", code, path], timeout=10)
+    return None if rc == 0 else (out.strip().splitlines() or ["結束碼 %d" % rc])[-1]
 
 
 def resolve_owner(args, state):
@@ -635,7 +638,8 @@ def prepare_data_dir(user, pw, data_dir):
             raise Abort("%s 的擁有者不是 %s" % (data_dir, user))
     for d in (data_dir, os.path.join(data_dir, "data"), os.path.join(data_dir, "logs")):
         os.makedirs(d, exist_ok=True)
-        os.chmod(d, 0o750)   # DSM 的 homes 有 ACL，新目錄可能繼承成所有人可寫，明確收緊
+        # 只有照片擁有者能進入：裡面有 config.yml 與照片裡讀出的文字。DSM 的 homes 有 ACL，新目錄可能繼承成所有人可寫
+        os.chmod(d, 0o700)
         if os.geteuid() == 0:
             os.chown(d, pw.pw_uid, pw.pw_gid)
 
@@ -648,6 +652,10 @@ def ensure_config(args, user, pw, data_dir, dry_run):
         load_config(path)
         return path, "沿用 %s" % path
     if dry_run:
+        if args.import_config:
+            return path, "會從 %s 匯入，寫到 %s" % (args.import_config, path)
+        if os.path.exists(os.path.join(data_dir, "config.toml")):
+            return path, "會從舊版的 config.toml 轉換，寫到 %s" % path
         return path, "會建立 %s" % path
     if args.import_config:
         with open(args.import_config, encoding="utf-8") as f:
@@ -800,8 +808,8 @@ def preflight(args, state):
     check(sock_alive(SYNOSCGI_SOCK), "synoscgi socket 正常", "連不上 %s" % SYNOSCGI_SOCK)
     user, group = nginx_worker_user()
     if check(user, "nginx worker 身分：%s:%s" % (user, group), "判斷不出 nginx worker 的身分"):
-        check(can_connect_as(SYNOSCGI_SOCK, user), "%s 可以連 synoscgi（filter 會用這個身分執行）" % user,
-              "%s 連不上 synoscgi" % user)
+        err = connect_error_as(SYNOSCGI_SOCK, user)
+        check(err is None, "%s 可以連 synoscgi（filter 會用這個身分執行）" % user, "%s 連不上 synoscgi：%s" % (user, err))
     ctx["nginx_user"], ctx["nginx_group"] = user, group
     url = pick_probe(args.probe_url, state)
     check(url, "DSM 健康檢查：%s" % url, "DSM 健康檢查網址都失敗，請用 --probe-url 指定")
@@ -925,8 +933,9 @@ def cmd_install(args):
                     raise Abort("systemctl %s 失敗：%s" % (" ".join(a), out))
             ping = wait_engine(cfg["search"]["socket"])
             ok("索引器與搜尋服務已啟動（目前索引 %d 張）" % ping.get("items", 0))
-            if not can_connect_as(cfg["search"]["socket"], ctx["nginx_user"]):
-                raise Abort("%s 連不上搜尋服務（%s）" % (ctx["nginx_user"], cfg["search"]["socket"]))
+            err = connect_error_as(cfg["search"]["socket"], ctx["nginx_user"])
+            if err:
+                raise Abort("%s 連不上搜尋服務（%s）：%s" % (ctx["nginx_user"], cfg["search"]["socket"], err))
             put(FILTER_CONFIG, render_filter_config(cfg))
             code, out = systemctl("restart", FILTER_UNIT)
             if code != 0:

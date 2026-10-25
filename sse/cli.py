@@ -136,6 +136,8 @@ def engine_main(args, argv):
 
 
 def main(argv=None):
+    # DSM 的 /etc/profile 設了 umask 077：sudo 執行時建立的目錄會變成 700，filter（http）就讀不到設定
+    os.umask(0o022)
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = parser()
     args = ap.parse_args(argv)

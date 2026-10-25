@@ -141,6 +141,8 @@ install_from() {
     say "Installing $NAME / 安裝程式"
     "$UV" pip install --quiet --python "$PREFIX/venv.new/bin/python" --reinstall-package "$NAME" "$src"
     [ "$UV_CACHE_DIR" != "$PREFIX/cache" ] || rm -rf "$UV_CACHE_DIR"    # 下載快取用不到了，省空間
+    # 程式要讓 filter（http）與照片擁有者都能執行；也修好舊版在 umask 077 下裝出來的 700 目錄
+    chmod -R a+rX "$PREFIX"
 
     if [ "$DRY" = 1 ]; then
         rc=0
@@ -155,7 +157,9 @@ install_from() {
     rc=0
     run_tty "$PREFIX/venv/bin/python" -I -m sse install --channel "$CHANNEL" --source "$SOURCE" "$@" || rc=$?
     if [ $rc -ne 0 ]; then
-        if [ -d "$PREFIX/venv.prev" ]; then
+        if [ "$NEW" = 1 ]; then
+            rm -rf "$PREFIX"    # 第一次安裝就失敗：sse install 已回復系統設定，下載的程式也不留
+        elif [ -d "$PREFIX/venv.prev" ]; then
             # sse install 失敗時已經把系統設定回復成原本的樣子；這裡把程式也換回去，再重啟用到程式的服務
             say "Restoring the previous version / 換回原本的版本"
             rm -rf "$PREFIX/venv"
@@ -198,6 +202,9 @@ download_release() {
 
 main() {
     set -eu
+    # DSM 的 /etc/profile 設了 umask 077：從 SSH 登入後執行時，建立的目錄會變成只有 root 能進入，
+    # filter（http）與照片擁有者都執行不了 /usr/local/sse 裡的 Python
+    umask 022
     ROOT="${SSE_ROOT:-}"                     # 測試用：把系統路徑移到沙盒
     PREFIX="$ROOT/usr/local/sse"
     STATE="$ROOT/usr/local/etc/sse/state.json"

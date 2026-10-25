@@ -53,6 +53,15 @@ def sock_alive(path):
         s.close()
 
 
+def dsm_login_umask():
+    """DSM 的 /etc/profile 設了 umask 077：使用者從 SSH 登入後執行安裝就是這個環境。"""
+    os.umask(0o077)
+
+
+def mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
 def wait_for(cond, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
@@ -190,7 +199,7 @@ http {
 
     def install(self, *args):
         """sudo ./install.sh …"""
-        r = subprocess.run(["sh", os.path.join(REPO, "install.sh")] + list(args), env=self.env,
+        r = subprocess.run(["sh", os.path.join(REPO, "install.sh")] + list(args), env=self.env, preexec_fn=dsm_login_umask,
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                            timeout=600)
         return r.returncode, r.stdout
@@ -199,12 +208,25 @@ http {
         """curl -fsSL …/install.sh | sudo sh -s -- …：stdin 是腳本本身，$0 是 sh。"""
         with open(os.path.join(REPO, "install.sh"), "rb") as f:
             script = f.read()
-        r = subprocess.run(["sh", "-s", "--"] + list(args), input=script, env=self.env, stdout=subprocess.PIPE,
+        r = subprocess.run(["sh", "-s", "--"] + list(args), input=script, env=self.env, preexec_fn=dsm_login_umask,
+                           stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, timeout=600, start_new_session=True)   # 沒有 /dev/tty
         return r.returncode, r.stdout.decode()
 
     def version(self):
         return self.sse("--version")[1].strip()
+
+    def check_modes(self):
+        """在 umask 077 下安裝，filter（http）與照片擁有者照樣要能執行程式、讀 filter 的設定。"""
+        site = subprocess.run([self.p("usr/local/sse/venv/bin/python"), "-I", "-c", "import sse; print(sse.__file__)"],
+                              stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
+        for rel in ("usr/local/sse", "usr/local/sse/venv", "usr/local/sse/venv/bin", "usr/local/etc/sse",
+                    "usr/local/bin/sse"):
+            self.assertEqual(mode(self.p(rel)), 0o755, rel)
+        for path in (self.p("usr/local/sse/sse-filter.py"), self.p("usr/local/etc/sse/filter.json"), site):
+            self.assertEqual(mode(path) & 0o044, 0o044, path)
+        self.assertEqual(mode(self.data), 0o700)                    # config.yml 與照片裡的文字：只有擁有者
+        self.assertEqual(mode(os.path.join(self.data, "config.yml")), 0o600)
 
     def install_args(self, *extra):
         return ["--user", USER, "--data-dir", self.data, "--probe-url", self.probe, "--yes"] + list(extra)
@@ -212,6 +234,7 @@ http {
     def sse(self, *args):
         """sudo sse …（install 建立的指令）"""
         r = subprocess.run([self.p("usr/local/bin/sse")] + list(args), env=self.env, stdin=subprocess.DEVNULL,
+                           preexec_fn=dsm_login_umask,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=240)
         return r.returncode, r.stdout
 
@@ -273,12 +296,10 @@ http {
         rc, out = self.sse("progress", "--json")
         return json.loads(out) if rc == 0 else {}
 
-    def nothing_installed(self, program_left=False):
-        """系統回到原狀。program_left：/usr/local/sse（下載的程式）可以留著，其他都不能動。"""
-        rels = ["usr/local/etc/sse", "usr/local/bin/sse", "etc/nginx/nginx.conf.sse-orig", "var/log/sse", "run/sse",
-                "run/sse-engine"] + ["etc/systemd/system/" + u for u in UNITS]
-        if not program_left:
-            rels.append("usr/local/sse")
+    def nothing_installed(self):
+        """系統回到原狀（第一次安裝失敗時，下載的程式也不留）。"""
+        rels = ["usr/local/sse", "usr/local/etc/sse", "usr/local/bin/sse", "etc/nginx/nginx.conf.sse-orig", "var/log/sse",
+                "run/sse", "run/sse-engine"] + ["etc/systemd/system/" + u for u in UNITS]
         for rel in rels:
             self.assertFalse(os.path.exists(self.p(rel)), rel)
         self.assertEqual(self.conf(), self.original)
@@ -306,7 +327,7 @@ http {
         self.assertIn("其他 filter", out)
         self.assertIn("找不到 Synology Photos", out)
         self.assertIn("有 2 項檢查沒通過，沒有做任何變更", out)
-        self.nothing_installed(program_left=True)
+        self.nothing_installed()
 
     def test_03_first_run_without_terminal_writes_template(self):
         rc, out = self.install(*self.install_args())
@@ -318,7 +339,7 @@ http {
             text = f.read()
         self.assertIn('account: "%s"' % USER, text)
         self.assertIn("# ", text)   # 範本的說明都留著
-        self.nothing_installed(program_left=True)
+        self.nothing_installed()
 
     def test_04_rollback_when_engine_does_not_start(self):
         # 搜尋服務起不來（socket 的目錄其實是檔案）：已經改過 nginx，要全部回復
@@ -332,7 +353,7 @@ http {
         self.assertIn("搜尋服務沒有在 20 秒內回應", out)
         self.assertIn("還原 nginx.conf", out)
         self.assertIn("回復完成，DSM 回應正常", out)
-        self.nothing_installed(program_left=True)
+        self.nothing_installed()
 
     # ── 安裝 ──
 
@@ -357,6 +378,7 @@ http {
         filter_cfg = json.loads(self.read("usr/local/etc/sse/filter.json"))
         self.assertEqual((filter_cfg["mode"], filter_cfg["engine_socket"]), ("engine", self.engine_sock))
         self.assertNotIn("pw-alice", json.dumps(filter_cfg))   # 密碼不會進 filter 的設定
+        self.check_modes()
         state = json.loads(self.read("usr/local/etc/sse/state.json"))
         self.assertEqual((state["dsm_build"], state["user"], state["data_dir"]),
                          ("86009", USER, os.path.realpath(self.data)))
@@ -496,6 +518,7 @@ http {
 
     def test_16_upgrade_in_place(self):
         state = json.loads(self.read("usr/local/etc/sse/state.json"))
+        os.chmod(self.p("usr/local/sse/venv/bin"), 0o700)            # 舊版在 umask 077 下裝出來的樣子
         unit = self.p("etc/systemd/system/sse-indexer.service")
         with open(unit, "a") as f:
             f.write("# 舊版範本\n")
@@ -508,6 +531,7 @@ http {
         with open(unit) as f:
             self.assertNotIn("舊版範本", f.read())
         self.assertEqual(json.loads(self.read("usr/local/etc/sse/state.json"))["installed_at"], state["installed_at"])
+        self.check_modes()
         self.finds("cat", CATS)
 
     # ── 從 GitHub release 安裝與更新（curl | sh） ──
