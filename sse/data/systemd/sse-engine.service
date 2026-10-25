@@ -1,0 +1,22 @@
+# synology-photos-search-enhancement：搜尋服務（sse install 產生，請勿手動修改）
+# 以照片擁有者的身分執行；群組設成 nginx 的群組，sse-filter 才連得到 socket。
+[Unit]
+Description=Photos search enhancement: search engine
+After=network-online.target
+
+[Service]
+Type=simple
+User=$euser
+Group=$egroup
+RuntimeDirectory=sse-engine
+# systemd 219（DSM 7.3）建這個目錄時用的是使用者的主要群組，不是 Group=，所以目錄要讓其他人能進入；
+# 存取由 socket 本身的 0660（擁有者 + nginx 群組）控制
+RuntimeDirectoryMode=0755
+ExecStart=$engine_python -I -m sse --config $config serve
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+MemoryLimit=1536M
+
+[Install]
+WantedBy=multi-user.target

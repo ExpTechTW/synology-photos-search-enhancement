@@ -1,0 +1,7 @@
+# synology-photos-search-enhancement：DSM 重新產生 nginx.conf 後，在安全條件下重新套用 upstream 設定
+[Unit]
+Description=Photos search enhancement: nginx guard
+
+[Service]
+Type=oneshot
+ExecStart=$engine_python -I -m sse guard

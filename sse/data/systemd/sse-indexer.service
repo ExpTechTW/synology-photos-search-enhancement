@@ -1,0 +1,21 @@
+# synology-photos-search-enhancement：索引器（sse install 產生，請勿手動修改）
+# 以照片擁有者的身分執行，只呼叫讀取類 WebAPI；優先權調低，不跟 DSM 搶資源。
+[Unit]
+Description=Photos search enhancement: indexer
+After=network-online.target
+
+[Service]
+Type=simple
+User=$euser
+ExecStart=$engine_python -I -m sse --config $config index
+Restart=on-failure
+RestartSec=60
+# 2 = 資料庫屬於另一個帳號，重啟也沒用
+RestartPreventExitStatus=2
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+MemoryLimit=512M
+
+[Install]
+WantedBy=multi-user.target

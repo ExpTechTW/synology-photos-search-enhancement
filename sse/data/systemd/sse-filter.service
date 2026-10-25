@@ -1,0 +1,25 @@
+# synology-photos-search-enhancement：SCGI filter（sse install 產生，請勿手動修改）
+# filter 沒在跑時，nginx 會自動退回直連 synoscgi，所以不需要、也不應該依賴 synoscgi 的啟動順序。
+[Unit]
+Description=Photos search enhancement: SCGI filter
+After=network.target
+
+[Service]
+Type=simple
+# 跟 nginx worker 同一個身分：nginx 本來就能連 synoscgi，filter 不需要 root
+User=$user
+Group=$group
+RuntimeDirectory=sse
+RuntimeDirectoryMode=0750
+# DSM 內建的 Python（只用標準庫）：venv 壞掉或被 DSM 更新清掉時 filter 照樣能跑
+ExecStart=$python -I $prefix/sse-filter.py --config $filter_config
+Restart=always
+RestartSec=2
+TimeoutStopSec=40
+NoNewPrivileges=yes
+LimitNOFILE=65536
+# 記憶體上限：超過就被重啟，期間 nginx 自動直連 synoscgi（DSM 7.3 是 systemd 219，只認 MemoryLimit）
+MemoryLimit=256M
+
+[Install]
+WantedBy=multi-user.target

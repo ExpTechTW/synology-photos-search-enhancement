@@ -1,0 +1,50 @@
+# synology-photos-search-enhancement
+#
+# Contains your DSM password and API keys: keep this file private (chmod 600).
+# 這個檔案有 DSM 密碼與 API key，權限請保持 600。
+#
+# After editing, apply with:   sudo sse apply
+# 改完之後執行：               sudo sse apply
+
+synology:
+  # The DSM account that owns the photos (Synology Photos "Personal Space").
+  # Two-factor authentication must be off for this account.
+  # 照片擁有者的 DSM 帳號（個人空間的照片）；這個帳號不能開兩步驟驗證。
+  account: ""
+  password: ""
+  # url: https://127.0.0.1:5001      # DSM on this NAS; change only if you moved the HTTPS port
+  # verify_tls: false                # DSM uses a self-signed certificate on 127.0.0.1
+
+# Image + text embeddings (required). An OpenAI-compatible /v1/embeddings endpoint serving
+# EmbeddingGemma 2 with image support, e.g. llama.cpp — see docs/models.md.
+# 圖片與文字的 embedding（必要）：提供 EmbeddingGemma 2（含圖片）的 OpenAI 相容服務，見 docs/models.zh-TW.md。
+embedding:
+  base_url: ""                       # e.g. http://192.168.1.10:8080/v1
+  api_key: ""                        # leave empty if your server has no key / 沒有就留空
+  model: embeddinggemma-2
+  # image_size: m                    # thumbnail sent for embedding: m (fast) or xl / 送去 embedding 的縮圖
+  # media_marker: "<__media__>"      # must match LLAMA_MEDIA_MARKER of llama-server
+
+# Read the text in photos (optional): any OpenAI-compatible chat model that accepts images.
+# 讀照片裡的文字（選用）：任何能看圖的 OpenAI 相容聊天模型。
+ocr:
+  enabled: true
+  model: ""                          # e.g. gemma3:12b (Ollama), gpt-4o-mini (OpenAI)
+  # base_url: ""                     # empty = same server (and API key) as embedding / 空白 = 跟 embedding 同一個服務
+  # api_key: ""
+  # extra_body: {}                   # extra request fields, e.g. {reasoning_effort: none} for thinking models
+
+search:
+  # Higher = fewer but more precise results. Check scores with: sse search <word> --explain
+  # 調高：結果較少、較準。用 sse search <字> --explain 看分數。
+  min_score: 0.71                    # image similarity threshold / 圖片相似度門檻
+  text_min_score: 0.75               # threshold for text found in photos / 照片裡文字的門檻
+  # max_results: 500                 # at most this many photos added to one search / 每次搜尋最多加幾張
+
+filter:
+  # engine: add AI results to the native search.  passthrough: change nothing (for troubleshooting).
+  # engine：把 AI 找到的照片加進原生搜尋結果。passthrough：完全不改（排查問題用）。
+  mode: engine
+
+log:
+  keep_days: 3                       # logs older than this are deleted / 只留這幾天內的 log

@@ -1,0 +1,64 @@
+# 測試；通過後發佈 release（版本 vYYYY.MM.DD+build.N）：
+#   main 分支    → pre-release（sudo sse update --channel pre-release 才會裝到）
+#   release 分支 → release（預設的更新管道）
+name: CI & Release
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.21"
+      - name: Cache nginx build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sse-tests
+          key: sse-tests-nginx-1.23.1-pcre2-10.40-${{ runner.os }}
+      - name: Test (filter on Python 3.8, sse on 3.12, end-to-end with nginx 1.23.1)
+        run: sh tests/run.sh
+        env:
+          SSE_TEST_TMP: /tmp
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Next version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day="$(date -u +%Y.%m.%d)"
+          n="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq "[.[].tagName | select(startswith(\"v$day+build.\")) | ltrimstr(\"v$day+build.\") | tonumber] | max // 0")"
+          echo "tag=v$day+build.$((n + 1))" >> "$GITHUB_OUTPUT"
+      - name: Package
+        run: sh scripts/package.sh "${{ steps.ver.outputs.tag }}" dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          if [ "$GITHUB_REF_NAME" = release ]; then
+            kind="--latest"
+          else
+            kind="--prerelease --latest=false"
+          fi
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes $kind

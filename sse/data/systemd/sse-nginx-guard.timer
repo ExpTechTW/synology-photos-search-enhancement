@@ -1,0 +1,11 @@
+# synology-photos-search-enhancement：path 監看之外的保險，開機後與每 10 分鐘檢查一次
+[Unit]
+Description=Photos search enhancement: periodic nginx guard
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=10min
+Unit=sse-nginx-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,58 @@
+# EmbeddingGemma 2 (text + images) on llama.cpp, NVIDIA GPU.
+# EmbeddingGemma 2（文字 + 圖片）的 llama.cpp 服務，NVIDIA GPU。
+#
+# See docs/models.md / 說明見 docs/models.zh-TW.md
+#
+#   mkdir -p models && cd models
+#   curl -LO https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-BF16.gguf
+#   curl -LO https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/main/mmproj-BF16.gguf
+#   cd .. && docker compose up -d
+#
+# config.yml:  embedding.base_url: http://<this machine>:8080/v1
+services:
+  embeddinggemma:
+    # b11718 or newer (EmbeddingGemma 2 support). cuda12 also runs on older GPUs (Pascal); newer GPUs can use server-cuda-*
+    # 需要 b11718 以後的版本。cuda12 映像也支援較舊的 GPU（Pascal）；新的 GPU 可以用 server-cuda-*
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11718
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    environment:
+      # Fixed marker for image inputs; must match embedding.media_marker in config.yml
+      # 固定圖片的 marker（否則每次啟動都是隨機的），要跟 config.yml 的 embedding.media_marker 相同
+      - LLAMA_MEDIA_MARKER=<__media__>
+    # Never FP16 (NaN / degraded vectors). BF16 needs an RTX 30 series or newer GPU. On older GPUs convert both files to
+    # F32 (docs/models.md), point -m / --mmproj at them, and add: --flash-attn off --cache-type-k f32 --cache-type-v f32
+    # 不能用 FP16（會出現 NaN 或劣化的向量）。BF16 需要 RTX 30 系列以後的 GPU；較舊的 GPU 把兩個檔案轉成 F32
+    # （見 docs/models.zh-TW.md），改 -m / --mmproj，並加上 --flash-attn off --cache-type-k f32 --cache-type-v f32
+    #
+    # -np 1: the plugin sends one request at a time. If other programs share this server, raise -np and set -c to -np × 8192
+    # -np 1：外掛一次只送一個請求。有其他程式共用時調高 -np，-c 設成 -np × 8192
+    command: >
+      -m /models/embeddinggemma-2-BF16.gguf
+      --mmproj /models/mmproj-BF16.gguf
+      --alias embeddinggemma-2
+      --host 0.0.0.0
+      --port 8080
+      --embeddings
+      --pooling mean
+      -ngl 99
+      -c 8192
+      -np 1
+      -b 8192
+      -ub 8192
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3

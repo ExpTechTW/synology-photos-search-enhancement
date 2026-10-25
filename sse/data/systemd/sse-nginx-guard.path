@@ -1,0 +1,10 @@
+# synology-photos-search-enhancement：nginx.conf 一被改寫就觸發 guard
+[Unit]
+Description=Photos search enhancement: watch nginx.conf
+
+[Path]
+PathChanged=$nginx_conf
+Unit=sse-nginx-guard.service
+
+[Install]
+WantedBy=multi-user.target

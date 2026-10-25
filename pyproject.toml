@@ -1,0 +1,22 @@
+[project]
+name = "synology-photos-search-enhancement"
+dynamic = ["version"]
+description = "Find photos by content and by the text in them, right in Synology Photos' native search."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = ["numpy==2.2.6", "pyyaml==6.0.2"]
+
+[project.scripts]
+sse = "sse.cli:main"
+
+# hatchling 在暫存目錄建置，不會在原始碼旁邊留下 build/、*.egg-info
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "sse/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sse"]
