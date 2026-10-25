@@ -1084,6 +1084,8 @@ def cmd_uninstall(args):
         if data_dir and not purge and os.path.exists(data_dir):
             say("\n資料目錄保留在 %s；不需要的話：rm -rf %s" % (data_dir, data_dir))
         say("\n解除安裝完成。" if not left else "\n解除安裝完成，但有殘留，見上方。")
+        say("搜尋已回到 Synology Photos 原本的結果：只找得到 Photos 自己認得的（物件分類、人物、地點、標籤），\n"
+            "照片裡的文字與 AI 相似搜尋找到的照片不會再出現。已經開著的 Photos 網頁請重新整理，App 請重新開啟。")
         return 0 if not left else 1
 
 

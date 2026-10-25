@@ -184,6 +184,10 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 Keeping `~/sse` (the index database and `config.yml`) means a later reinstall picks up where it left off, without
 re-indexing. `--yes` never deletes it unless `--purge` is also given.
 
+Search then goes back to what Synology Photos finds on its own (its object categories, people, places and tags).
+Photos found through the text in them or by AI similarity no longer appear; for example, a word that only appears in
+screenshots will find nothing. Reload any open Photos page and reopen the mobile app.
+
 This stops and removes the services and restores `nginx.conf`. It also deletes `/usr/local/sse`,
 `/usr/local/etc/sse`, `/var/log/sse` and `/usr/local/bin/sse`. Synology Photos and your photos are never touched.
 

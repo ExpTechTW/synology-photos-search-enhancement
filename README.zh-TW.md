@@ -171,6 +171,9 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 保留 `~/sse`（索引資料庫與 `config.yml`）的話，之後重新安裝會接著用，不必重建索引。加 `--yes` 時除非同時加 `--purge`，
 否則一律保留。
 
+之後搜尋會回到 Synology Photos 原本的結果（它自己的物件分類、人物、地點、標籤）。靠照片裡的文字或 AI 相似度找到的照片
+不會再出現，例如只出現在截圖文字裡的字會找不到任何照片。已經開著的 Photos 網頁請重新整理，App 請重新開啟。
+
 會停止並移除服務、還原 `nginx.conf`，刪除 `/usr/local/sse`、`/usr/local/etc/sse`、`/var/log/sse`、`/usr/local/bin/sse`。
 不會動 Synology Photos 和你的照片。
 

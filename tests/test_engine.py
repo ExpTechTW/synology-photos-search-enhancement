@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -185,7 +186,26 @@ class Engine(unittest.TestCase):
         st = json.loads(out.getvalue())
         self.assertEqual((st["embedding"]["percent"], st["ocr"]["percent"]), (100.0, 100.0))
         self.assertEqual(st["last_full_scan_result"]["seen"], 20)
-        self.assertTrue(st["indexer_running"])   # 進度檔的 pid 是這個測試 process
+        # 索引器還在不在跑：看進度檔的 pid（Linux 上還要確認那個 process 是 sse，避免 pid 被重複使用時誤判）
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "sse"])
+        try:
+            prog["pid"] = child.pid
+            with open(prog_path, "w") as f:
+                json.dump(prog, f)
+            self.assertTrue(json.loads(self.progress_json())["indexer_running"])
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(json.loads(self.progress_json())["indexer_running"])
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])   # 別的程式用了同一個 pid
+        try:
+            prog["pid"] = other.pid
+            with open(prog_path, "w") as f:
+                json.dump(prog, f)
+            self.assertEqual(json.loads(self.progress_json())["indexer_running"], not os.path.exists("/proc"))
+        finally:
+            other.kill()
+            other.wait()
         # 有待處理的照片：百分比與「OCR 等 embedding」
         for uid in (900, 901, 902, 903, 904):
             self.dsm.items[uid] = fake_dsm.make_item(uid, 1, T0, "dog")
@@ -201,6 +221,14 @@ class Engine(unittest.TestCase):
             main(["--config", self.cfg_path, "progress"])
         self.assertIn("████████████████░░░░", out.getvalue())
         self.assertIn("完整掃描  上次", out.getvalue())
+
+    def progress_json(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main(["--config", self.cfg_path, "progress", "--json"]), 0)
+        return out.getvalue()
 
     def test_progress_rate_and_pause(self):
         from sse.indexer import Progress
@@ -459,7 +487,8 @@ class Engine(unittest.TestCase):
         t.start()
         sock = self.cfg["search"]["socket"]
         end = time.time() + 10
-        while not getattr(srv, "ready", False) and time.time() < end:
+        # 啟動後會逐一送出 hub 校正用的通用查詢：等送完，才不會跟下面的快取計數混在一起
+        while (not getattr(srv, "ready", False) or srv.index.bank is None) and time.time() < end:
             time.sleep(0.05)
 
         def ask(req):
