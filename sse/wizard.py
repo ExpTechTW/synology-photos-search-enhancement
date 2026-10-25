@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import re
+import unicodedata
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "config.example.yml")
 
@@ -64,19 +65,42 @@ def write_config(path, text, uid=None, gid=None):
     os.replace(tmp, path)
 
 
+def read_line(prompt, secret=False):
+    """讀一行輸入，去掉前後空白。
+
+    DSM 的終端機沒有開 iutf8：輸入法還在中文模式時打了字，用倒退鍵刪掉只會刪一個位元組，
+    畫面上看不出來，送出的卻是殘缺的 UTF-8。這種輸入請使用者重新輸入，不要當掉或當成答案。
+    """
+    while True:
+        try:
+            v = getpass.getpass(prompt) if secret else input(prompt)
+        except UnicodeDecodeError:
+            v = "\ufffd"
+        except EOFError:
+            return ""
+        if "\ufffd" not in v and not any("\udc80" <= c <= "\udcff" for c in v):   # 無法解碼的位元組
+            # 全形英數（中文輸入法的全形模式）換成半形；密碼原樣保留
+            return v.strip() if secret else unicodedata.normalize("NFKC", v).strip()
+        print("  有無法辨識的字元（輸入法是不是還在中文模式？），請重新輸入")
+
+
 def ask(prompt, default="", secret=False):
     shown = "%s%s: " % (prompt, " [%s]" % default if default and not secret else "")
     while True:
-        v = getpass.getpass(shown) if secret else input(shown)
-        v = v.strip() or default
+        v = read_line(shown, secret) or default
         if v:
             return v
         print("  這一項必須填")
 
 
 def ask_yes(prompt, default=True):
-    v = input("%s [%s]: " % (prompt, "Y/n" if default else "y/N")).strip().lower()
-    return default if not v else v in ("y", "yes")
+    while True:
+        v = read_line("%s [%s] " % (prompt, "Y/n" if default else "y/N")).lower()
+        if not v:
+            return default
+        if v in ("y", "yes", "n", "no"):
+            return v in ("y", "yes")
+        print("  請輸入 y 或 n")
 
 
 def interactive(account_default):
@@ -87,14 +111,14 @@ def interactive(account_default):
     v[("synology", "password")] = ask("DSM 密碼 / DSM password", secret=True)
     print("\nEmbedding 服務（OpenAI 相容、提供 EmbeddingGemma 2 圖片 embedding；架設方式見 docs/models.md）")
     v[("embedding", "base_url")] = ask("  網址 / base URL（例如 http://192.168.1.10:8080/v1）")
-    v[("embedding", "api_key")] = getpass.getpass("  API key（沒有就按 Enter / leave empty if none）: ").strip()
+    v[("embedding", "api_key")] = read_line("  API key（沒有就按 Enter / leave empty if none）: ", secret=True)
     v[("embedding", "model")] = ask("  模型名稱 / model", "embeddinggemma-2")
     print()
     if ask_yes("要讀照片裡的文字（OCR）嗎？需要一個能看圖的模型 / Enable OCR (needs a vision chat model)?"):
         same = ask_yes("  OCR 跟 embedding 用同一個服務？/ Same server as embedding?")
         if not same:
             v[("ocr", "base_url")] = ask("  OCR 網址 / OCR base URL")
-            v[("ocr", "api_key")] = getpass.getpass("  OCR API key（沒有就按 Enter）: ").strip()
+            v[("ocr", "api_key")] = read_line("  OCR API key（沒有就按 Enter）: ", secret=True)
         v[("ocr", "model")] = ask("  OCR 模型名稱 / OCR model（例如 gemma3:12b、gpt-4o-mini）")
     else:
         v[("ocr", "enabled")] = False

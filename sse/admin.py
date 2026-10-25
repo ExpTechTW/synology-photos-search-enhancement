@@ -225,9 +225,8 @@ def want_purge(args, data_dir):
         return True
     if args.yes or not data_dir or not os.path.exists(data_dir) or not sys.stdin.isatty():
         return False
-    v = input("要連資料目錄 %s 一起刪除嗎？（索引資料庫、config.yml、log；保留的話重新安裝不必重建索引）[y/N] "
-              % data_dir).strip().lower()
-    return v in ("y", "yes")
+    return wizard.ask_yes("要連資料目錄 %s 一起刪除嗎？（索引資料庫、config.yml、log；保留的話重新安裝不必重建索引）"
+                          % data_dir, default=False)
 
 
 def confirm(yes, question):
@@ -235,7 +234,7 @@ def confirm(yes, question):
         return
     if not sys.stdin.isatty():
         raise Abort("非互動模式請加 --yes")
-    if input("%s [y/N] " % question).strip().lower() not in ("y", "yes"):
+    if not wizard.ask_yes(question, default=False):
         raise Abort("已取消，沒有做任何變更")
 
 

@@ -182,6 +182,42 @@ class ConfigFile(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.d, "config.yml")))
 
 
+class ReadInput(unittest.TestCase):
+    """DSM 的終端機沒開 iutf8：用倒退鍵刪掉注音字只會刪一個位元組，送來殘缺的 UTF-8。"""
+
+    def answers(self, *lines):
+        it = iter(lines)
+
+        def fake(prompt=""):
+            v = next(it)
+            if isinstance(v, Exception):
+                raise v
+            return v
+        return mock.patch("builtins.input", fake), mock.patch("builtins.print")
+
+    def test_broken_utf8_asks_again(self):
+        broken = b"\xe3\x84y".decode("utf-8", "surrogateescape")   # 「ㄗ」被刪掉一個位元組後再打 y
+        decode_error = UnicodeDecodeError("utf-8", b"\xe3\x84y", 0, 2, "invalid continuation byte")
+        for bad in (broken, "\ufffdy", decode_error):
+            a, p = self.answers(bad, "y")
+            with a, p as printed:
+                self.assertTrue(wizard.ask_yes("確定？", default=False))
+            self.assertIn("無法辨識", printed.call_args_list[0][0][0])
+
+    def test_answers(self):
+        for lines, default, want in ((("",), False, False), (("",), True, True), (("ｙ",), False, True),
+                                     ((" YES ",), False, True), (("n",), True, False), (("好", "y"), False, True),
+                                     ((EOFError(),), True, True)):
+            a, p = self.answers(*lines)
+            with a, p:
+                self.assertEqual(wizard.ask_yes("確定？", default=default), want, lines)
+        a, p = self.answers("ｈｔｔｐ://nas:8080/v1")
+        with a, p:
+            self.assertEqual(wizard.ask("網址"), "http://nas:8080/v1")   # 全形換成半形
+        with mock.patch("getpass.getpass", lambda prompt="": " ｐｗ "):
+            self.assertEqual(wizard.read_line("密碼", secret=True), "ｐｗ")    # 密碼不改
+
+
 class UninstallPrompt(unittest.TestCase):
     """解除安裝時詢問要不要刪資料目錄，預設保留。"""
 

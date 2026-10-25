@@ -138,6 +138,9 @@ def engine_main(args, argv):
 def main(argv=None):
     # DSM 的 /etc/profile 設了 umask 077：sudo 執行時建立的目錄會變成 700，filter（http）就讀不到設定
     os.umask(0o022)
+    # 終端機送來無法解碼的位元組時不要當掉，由讀取輸入的地方請使用者重新輸入（見 wizard.read_line）
+    if sys.stdin is not None and hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(errors="surrogateescape")
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = parser()
     args = ap.parse_args(argv)
