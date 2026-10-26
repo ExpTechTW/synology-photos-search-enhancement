@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# filter engine 模式的端對端測試：真的 nginx → sse-filter（engine 模式）→ 假 synoscgi（假 DSM，兩個帳號）
+# filter engine 模式的端對端測試：真的 nginx → sse filter（Go 執行檔，engine 模式）→ 假 synoscgi（假 DSM，兩個帳號）
 # ＋ 假的 sse-engine（unix socket，回傳固定結果）。
 #
-#   SSE_NGINX_BIN=/path/to/nginx SSE_FILTER_PY=/path/to/python3.8 python3 -m unittest tests.test_e2e_engine -v
+#   make build/sse
+#   SSE_NGINX_BIN=/path/to/nginx python3 -m unittest tests.test_e2e_engine -v
 import asyncio
 import http.client
 import json
@@ -17,11 +18,10 @@ import unittest
 from urllib.parse import urlencode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import fake_dsm  # noqa: E402
-from test_e2e_nginx import NGINX, FILTER_PY, SCGI_PARAMS, free_port, sock_alive, wait_for  # noqa: E402
+from test_e2e_nginx import NGINX, SSE_BIN, SCGI_PARAMS, free_port, sock_alive, wait_for  # noqa: E402
 
 DAY = 86400
 T0 = fake_dsm.E2E_T0
@@ -90,7 +90,7 @@ class EngineE2E(unittest.TestCase):
                                     stdout=subprocess.DEVNULL, stderr=cls.log)
         assert wait_for(lambda: sock_alive(cls.up))
         cls.engine = FakeEngine(cls.esock)
-        cls.filter = subprocess.Popen([FILTER_PY, "-I", REPO + "/sse/data/sse-filter.py", "--config", cls.cfg],
+        cls.filter = subprocess.Popen([SSE_BIN, "filter", "--config", cls.cfg],
                                       stdout=subprocess.DEVNULL, stderr=cls.log)
         assert wait_for(lambda: sock_alive(cls.fsock))
         cls.port = free_port()

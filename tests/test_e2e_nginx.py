@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # 端對端測試：真的 nginx（設定成跟 sse install 套用的一樣：filter 為主、synoscgi 為 backup）
-# + sse-filter + 假 synoscgi，驗證轉發、注入、大檔案、filter 掛掉時的退回行為。
+# + sse filter（Go 執行檔）+ 假 synoscgi，驗證轉發、注入、大檔案、filter 掛掉時的退回行為。
 #
-#   SSE_NGINX_BIN=/path/to/nginx SSE_FILTER_PY=/path/to/python3.8 python3 -m unittest tests.test_e2e_nginx -v
+#   make build/sse
+#   SSE_NGINX_BIN=/path/to/nginx python3 -m unittest tests.test_e2e_nginx -v
 #
+# SSE_BIN 可指定 sse 執行檔（預設 build/sse）。
 # macOS 的 unix socket 路徑上限 104 bytes，可用 SSE_TEST_TMP 指定較短的暫存目錄。
 import hashlib
 import http.client
@@ -23,7 +25,7 @@ from urllib.parse import urlencode
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 NGINX = os.environ.get("SSE_NGINX_BIN")
-FILTER_PY = os.environ.get("SSE_FILTER_PY", sys.executable)
+SSE_BIN = os.environ.get("SSE_BIN", os.path.join(REPO, "build", "sse"))
 
 SCGI_PARAMS = """
 scgi_param  REQUEST_METHOD     $request_method;
@@ -103,6 +105,7 @@ class E2E(unittest.TestCase):
     def _setup(cls):
         cls.d = tempfile.mkdtemp(prefix="sse.", dir=os.environ.get("SSE_TEST_TMP"))
         d = cls.d
+        assert os.access(SSE_BIN, os.X_OK), "找不到 sse 執行檔 %s（先 make build/sse，或用 SSE_BIN 指定）" % SSE_BIN
         cls.up = os.path.join(d, "up.sock")
         cls.fsock = os.path.join(d, "f.sock")
         cls.reqlog = os.path.join(d, "requests.log")
@@ -166,7 +169,7 @@ http {
 
     @classmethod
     def start_filter(cls):
-        cls.filter = subprocess.Popen([FILTER_PY, "-I", os.path.join(REPO, "sse", "data", "sse-filter.py"), "--config", cls.cfg],
+        cls.filter = subprocess.Popen([SSE_BIN, "filter", "--config", cls.cfg],
                                       stdout=subprocess.DEVNULL, stderr=cls.childlog)
         assert wait_for(lambda: sock_alive(cls.fsock)), "filter 沒起來"
 
