@@ -24,7 +24,7 @@ Photos（網頁 / App）──▶ nginx ──▶ sse-filter ──▶ DSM（syn
 ## 需要
 
 - 有 **DSM 7** 和 **Synology Photos** 的 Synology NAS。開發環境是 DSM 7.3.2、Photos 1.9.0（x86_64）；
-  ARM64 機種應該可以用，但沒有測試過。
+  ARM 機種（ARM64、ARMv7）應該可以用，但沒有測試過。
 - 能 SSH 登入的管理員帳號（`sudo`）。
 - 一個 **embedding 服務**，跑支援圖片的 EmbeddingGemma 2，例如在有 GPU 的電腦上跑 llama.cpp。
   見 [docs/models.zh-TW.md](docs/models.zh-TW.md)。
@@ -35,6 +35,9 @@ Photos（網頁 / App）──▶ nginx ──▶ sse-filter ──▶ DSM（syn
 
 外掛不會對模型服務併發：任何時候最多只有一個 embedding 請求和一個 OCR 請求在處理，每個請求只有一張圖或一段文字，
 上一個完成才送下一個。照片很多的話，第一次建立索引要好幾個小時；索引做到哪，搜尋就用到哪。
+
+外掛本身很輕。在 DS224+（Celeron J4125，四核）、2 萬張照片上實測：搜尋服務約佔 35 MB 記憶體、一次搜尋約 15 ms，
+filter 約佔 9 MB、每個 DSM 請求多花約 0.1 ms；吃重的工作都在模型服務那邊，NAS 的 CPU 幾乎是閒著的。
 
 ## 安裝
 
@@ -224,13 +227,22 @@ sudo rm -rf /usr/local/sse /usr/local/etc/sse /usr/local/bin/sse /var/log/sse /e
 
 ```sh
 make                     # 編譯這台電腦用的 build/sse（需要 Go；不用 cgo，沒有其他依賴）
-make release             # dist/sse-linux-{amd64,arm64,armv7}.tar.gz，跟 GitHub 上發佈的一樣
-sh tests/run.sh          # 全部（第一次會編譯跟 DSM 7.3 同版的 nginx 1.23.1）
+make nas                 # NAS 用的 build/sse-linux-{amd64,arm64,armv7}
+make release             # dist/：跟 GitHub 上發佈的一樣的檔案（指定版本：VERSION=2026.10.26+build.1）
+sh tests/run.sh          # 全部（第一次會編譯跟 DSM 7.3 同版的 nginx 1.23.1；測試工具需要 python3）
 sh tests/run.sh quick    # 只跑 Go 的測試
 ```
 
-要在 NAS 上試自己編譯的版本：交叉編譯（`GOOS=linux GOARCH=amd64 make build/sse`，或 `arm64`、
-`GOARCH=arm GOARM=7`），複製過去後執行 `sudo SSE_BINARY=./sse sh install.sh`。
+要在 NAS 上試自己編譯的版本：`make nas`，把 `build/sse-linux-amd64`（或對應 CPU 的那個）和 `install.sh` 複製到 NAS，
+執行 `sudo SSE_BINARY=./sse-linux-amd64 sh install.sh`。請放在家目錄：DSM 的 `/tmp` 不能執行程式。
+
+| 程式 | |
+|---|---|
+| [cmd/sse](cmd/sse) | 唯一的 `sse` 程式與它的子指令 |
+| [internal/filter](internal/filter) | nginx 與 DSM 之間的 SCGI filter |
+| [internal/indexer](internal/indexer)、[internal/search](internal/search)、[internal/server](internal/server) | 索引器、搜尋、搜尋服務 |
+| [internal/admin](internal/admin) | 安裝、更新、解除安裝、狀態、診斷… |
+| [internal/assets](internal/assets) | `config.example.yml` 與 systemd 服務範本，包在程式裡 |
 
 測試用假的 DSM、假的模型服務、假的 `systemctl`，搭配真的 nginx。`tests/test_install_sandbox.py` 會從安裝到解除安裝
 實際跑一遍 `install.sh` 與 `sse`，包含用假的 GitHub release（由 `scripts/package.sh` 打包）測試 `curl | sh` 安裝與更新，

@@ -648,9 +648,13 @@ http {
         for d in ("venv/bin", "python/cpython-3.12", "bin", "cache"):
             os.makedirs(os.path.join(prefix, d), exist_ok=True)
         py = os.path.join(prefix, "venv/bin/python")
-        self.write(py, "#!/bin/sh\nexec sleep 3600\n", 0o755)        # 舊的服務：只要跑得起來
-        for name in ("sse-filter.py", "install.sh", "bin/uv"):
+        # 舊的服務只要跑得起來；舊的 install.sh 會用它問目前的版本（python -I -c 'import sse; print(sse.__version__)'）
+        self.write(py, '#!/bin/sh\n[ "$2" = -c ] && { echo 2026.10.20+build.1; exit 0; }\nexec sleep 3600\n', 0o755)
+        for name in ("sse-filter.py", "bin/uv"):
             self.write(os.path.join(prefix, name), "# Python 版\n", 0o755)
+        # Python 版最後一版（v2026.10.25+build.8）的 install.sh，sudo sse update 執行的就是它
+        with open(os.path.join(HERE, "fixtures", "install-python-era.sh"), encoding="utf-8") as f:
+            self.write(os.path.join(prefix, "install.sh"), f.read(), 0o755)
         os.makedirs(self.p("usr/local/bin"), exist_ok=True)
         self.write("usr/local/bin/sse", '#!/bin/sh\nexec "%s" -I -m sse "$@"\n' % py, 0o755)
         group = grp.getgrgid(os.getgid()).gr_name
@@ -716,25 +720,19 @@ http {
         files["nginx.conf"] = (False, mode(self.conf_path), self.conf().encode())
         return files
 
-    def old_update(self, tag, channel):
-        """Python 版的 sudo sse update：舊的 install.sh 從 release 下載 synology-photos-search-enhancement.tar.gz、
-        驗證後解開到 /tmp，執行裡面的（新版）install.sh update，並用環境變數告訴它版本與管道。"""
-        work = tempfile.mkdtemp(prefix="old-update.", dir=self.root)
-        with tarfile.open(self.gh.asset_path(tag, fake_github.LEGACY)) as t:
-            t.extractall(work, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
-        script = os.path.join(work, "synology-photos-search-enhancement", "install.sh")
-        self.assertTrue(os.path.exists(os.path.join(os.path.dirname(script), "pyproject.toml")))   # 舊版檢查這個
-        r = subprocess.run(["sh", script, "update"], preexec_fn=dsm_login_umask, stdin=subprocess.DEVNULL,
-                           env=dict(self.env, SSE_WORK=work, SSE_SOURCE=tag, SSE_CHANNEL=channel),
+    def old_update(self, *args):
+        """Python 版的 sudo sse update：sse 會執行 sh /usr/local/sse/install.sh update [選項]。
+        舊的 install.sh 從 GitHub 找出最新版，下載 synology-photos-search-enhancement.tar.gz、驗證後交給裡面新版的 install.sh。"""
+        r = subprocess.run(["sh", self.p("usr/local/sse/install.sh"), "update"] + list(args), preexec_fn=dsm_login_umask,
+                           stdin=subprocess.DEVNULL, env=dict(self.env, SSE_PYTHON=sys.executable),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
-        self.assertFalse(os.path.exists(work))
         return r.returncode, r.stdout
 
     def test_23_failed_upgrade_from_python_version_restores_it(self):
         self.python_era_install()
         before = self.python_era_files()
         self.gh.add("v2026.10.27+build.1", prerelease=True, edit=break_serve)
-        rc, out = self.old_update("v2026.10.27+build.1", "pre-release")
+        rc, out = self.old_update("--channel", "pre-release")
         self.assertEqual(rc, 1, out)
         self.assertIn("升級中", out)
         self.assertIn("搜尋服務沒有在 20 秒內回應", out)
@@ -750,7 +748,7 @@ http {
     def test_24_upgrade_from_python_version(self):
         if not os.path.exists(self.p("usr/local/sse/venv")):
             self.python_era_install()
-        rc, out = self.old_update("v2026.10.25+build.1", "release")
+        rc, out = self.old_update()   # 安裝紀錄裡的管道是 release
         self.assertEqual(rc, 0, out)
         self.assertIn("下載 v2026.10.25+build.1", out)
         self.assertIn("升級中", out)
