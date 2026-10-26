@@ -54,7 +54,7 @@ checkout_dir() {
 
 # 這台機器要下載的檔案，例如 sse-linux-amd64.tar.gz
 asset_name() {
-    os="$(uname -s | tr 'A-Z' 'a-z')"
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
     case "$os" in
         linux | darwin) ;;
         *) die "unsupported OS / 不支援的系統：$os" ;;

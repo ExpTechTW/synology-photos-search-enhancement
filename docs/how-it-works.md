@@ -30,7 +30,7 @@ patched, and everything can be removed.
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Everything is one static Go binary, `/usr/local/sse/sse` (about 6 MB, no dependencies on the NAS; built for x86_64,
+Everything is one static Go binary, `/usr/local/sse/sse` (about 11 MB, no dependencies on the NAS; built for x86_64,
 ARM64 and ARMv7). The services are subcommands of it:
 
 | Component | Command | Runs as | Code |
