@@ -82,7 +82,7 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 ## 設定
 
 所有設定都在**一個檔案** `~/sse/config.yml`。每個選項的說明見範本
-[sse/data/config.example.yml](sse/data/config.example.yml)。改完之後：
+[internal/assets/config.example.yml](internal/assets/config.example.yml)。改完之後：
 
 ```sh
 sudo sse apply            # 檢查格式，用新設定重新啟動服務

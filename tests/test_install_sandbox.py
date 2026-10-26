@@ -502,7 +502,8 @@ http {
         self.finds("dog", self.find("alice", "dog"))   # 等 filter 重啟完
         sid = self.login("alice", "pw-alice")
         rc, out = self.sse("capture", "show")
-        self.assertIn('"kind": "native"', out)
+        records = [json.loads(line) for line in out.splitlines() if line.strip()]
+        self.assertIn("native", [r["kind"] for r in records])
         self.assertNotIn(sid, out)                     # 不記 session
         self.assertEqual(self.sse("capture", "off")[0], 0)
         self.assertIn("沒有診斷紀錄", self.sse("capture", "show")[1])

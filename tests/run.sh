@@ -32,5 +32,5 @@ if [ -z "${SSE_NGINX_BIN:-}" ]; then
     fi
 fi
 export SSE_NGINX_BIN
-echo "== 端對端（真的 nginx $("$SSE_NGINX_BIN" -v 2>&1 | sed 's/.*\///')、$SSE_BIN）"
+echo "== 端對端（真的 nginx $("$SSE_NGINX_BIN" -v 2>&1 | sed 's/.*\///')、${SSE_BIN}）"
 python3 -W ignore -m unittest tests.test_e2e_nginx tests.test_e2e_engine tests.test_install_sandbox

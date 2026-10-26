@@ -90,7 +90,7 @@ Upgrading from an older version that still used Python works the same way (`sudo
 ## Configuration
 
 Everything is in **one file**, `~/sse/config.yml`. The template with every option explained is
-[sse/data/config.example.yml](sse/data/config.example.yml). After editing it:
+[internal/assets/config.example.yml](internal/assets/config.example.yml). After editing it:
 
 ```sh
 sudo sse apply            # validate and restart the services with the new settings
