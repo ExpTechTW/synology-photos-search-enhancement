@@ -104,6 +104,7 @@ type report struct {
 	LastQuickScan      *int64         `json:"last_quick_scan"`
 	LastFullScanResult map[string]any `json:"last_full_scan_result"`
 	OCREnabled         bool           `json:"ocr_enabled"`
+	OCRBlocked         int64          `json:"ocr_blocked"` // embedding 失敗、所以不做 OCR 的照片
 	Indexer            map[string]any `json:"indexer"`
 	IndexerRunning     bool           `json:"indexer_running"`
 	Embedding          column         `json:"embedding"`
@@ -163,10 +164,13 @@ func progressReport(cfg *config.Config) (*report, error) {
 		json.Unmarshal(data, &r.Indexer)
 	}
 	r.IndexerRunning = r.Indexer != nil && indexerAlive(r.Indexer)
-	col := func(done, pending, failed int64, key string) column {
-		c := column{Done: done, Pending: pending, Failed: failed, Total: st.Items, Percent: 100}
-		if st.Items > 0 {
-			c.Percent = math.Round(1000*float64(done+failed)/float64(st.Items)) / 10
+	// OCR 要等 embedding 做完才做：embedding 失敗的照片不會做 OCR，不算在 OCR 的待處理與總數裡，
+	// 否則 OCR 會一直停在 99.x%、顯示「計算速度中」
+	conn.QueryRow("SELECT count(*) FROM item WHERE deleted=0 AND emb_state=2 AND ocr_state=0").Scan(&r.OCRBlocked)
+	col := func(done, pending, failed, total int64, key string) column {
+		c := column{Done: done, Pending: pending, Failed: failed, Total: total, Percent: 100}
+		if total > 0 {
+			c.Percent = math.Round(1000*float64(done+failed)/float64(total)) / 10
 		}
 		if r.IndexerRunning {
 			if rates, ok := r.Indexer["rate"].(map[string]any); ok {
@@ -181,8 +185,8 @@ func progressReport(cfg *config.Config) (*report, error) {
 		}
 		return c
 	}
-	r.Embedding = col(st.Embedded, st.EmbedPending, st.EmbedFailed, "emb")
-	r.OCR = col(st.OCRDone, st.OCRPending, st.OCRFailed, "ocr")
+	r.Embedding = col(st.Embedded, st.EmbedPending, st.EmbedFailed, st.Items, "emb")
+	r.OCR = col(st.OCRDone, st.OCRPending-r.OCRBlocked, st.OCRFailed, st.Items-r.OCRBlocked, "ocr")
 	return r, nil
 }
 
@@ -297,6 +301,9 @@ func cmdProgress(cfg *config.Config, o options) (int, error) {
 	if e.Failed > 0 || oc.Failed > 0 {
 		fmt.Printf("  失敗：embedding %d、OCR %d（各試 %d 次都沒成功；sse retry-failed 重新排入）\n",
 			e.Failed, oc.Failed, cfg.Index.MaxTries)
+		if r.OCRBlocked > 0 {
+			fmt.Printf("        embedding 失敗的 %d 張不做 OCR，不算在 OCR 的進度裡\n", r.OCRBlocked)
+		}
 	}
 	last := ""
 	if res := r.LastFullScanResult; res != nil {

@@ -155,6 +155,28 @@ func TestProgressReport(t *testing.T) {
 	}
 }
 
+// embedding 失敗的照片不會做 OCR：全部做完時 OCR 要顯示完成，不能停在 99.x%
+func TestProgressWithFailedEmbedding(t *testing.T) {
+	e := newEnv(t)
+	e.dsm.Set(testfake.MakeItem(777, 1, testfake.T0, "broken", "")) // 縮圖永遠拿不到
+	if err := e.indexer().RunOnce(true); err != nil {
+		t.Fatal(err)
+	}
+	_, out := e.run("progress")
+	for _, want := range []string{"embedding ████████████████████     20 / 21（100.0%）  完成",
+		"OCR       ████████████████████     20 / 20（100.0%）  完成", "embedding 失敗的 1 張不做 OCR"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("progress 少了 %q：\n%s", want, out)
+		}
+	}
+	_, out = e.run("progress", "--json")
+	var st map[string]any
+	json.Unmarshal([]byte(out), &st)
+	if ocr := st["ocr"].(map[string]any); ocr["pending"] != 0.0 || ocr["percent"] != 100.0 || st["ocr_blocked"] != 1.0 {
+		t.Errorf("ocr = %v, blocked = %v", ocr, st["ocr_blocked"])
+	}
+}
+
 func TestIndexerAlive(t *testing.T) {
 	sleeper := func(name string, args ...string) *exec.Cmd {
 		cmd := exec.Command(os.Args[0])
