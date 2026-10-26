@@ -7,6 +7,7 @@
 假圖片的內容是 b"\\xff\\xd8\\xff" + b"FAKE:<概念>|TEXT:<圖中文字>"，fake_llm 看得懂。
 """
 
+import datetime
 import hashlib
 import json
 import threading
@@ -21,17 +22,69 @@ APP_ADDITIONAL = json.dumps(["description", "tag", "exif", "resolution", "orient
                              "thumbnail", "video_meta", "mobile_cache_mtime", "folder", "rating", "motion_photo"])
 
 
-def _load_filter():
-    import importlib.util
-    import os
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sse", "data", "sse-filter.py")
-    spec = importlib.util.spec_from_file_location("sse_filter_for_fake", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def utc_day(ts):
+    d = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+    return d.year, d.month, d.day
 
 
-FILTER = _load_filter()
+def build_sections(items, unit, chunk=100):
+    """原生 get_search_timeline 的 section（規則由 Photos 1.9.0 的原生回應反推，跟 filter 的 buildSections 相同）：
+
+    - 以天（或月）為一組，依清單順序累積，超過 chunk 張就成一段
+    - 單一組就超過 chunk 張時自己成段，平均拆成「張數 // chunk」段；
+      這些段的 list 都是那一整組（item_count 是整組張數），offset 是該段在組內的起點
+    - 遇到這種大組或清單結尾時，還沒滿的部分併入前一段（前一段是大組拆出來的就自成一段）
+    - 一般段的 limit 是該段張數，offset 是 0
+    """
+    groups = []
+    for x in items:
+        y, m, d = utc_day(x["time"])
+        key = (y, m) if unit == "month" else (y, m, d)
+        if groups and groups[-1][0] == key:
+            groups[-1][1] += 1
+        else:
+            groups.append([key, 1])
+    secs = []   # [是否為大組, [(key, 張數)], limit, offset]
+    cur, n = [], 0
+
+    def flush():
+        if cur:
+            if secs and not secs[-1][0]:
+                secs[-1][1].extend(cur)
+                secs[-1][2] += sum(c for _, c in cur)
+            else:
+                secs.append([False, list(cur), sum(c for _, c in cur), 0])
+        del cur[:]
+
+    for key, c in groups:
+        if c > chunk:
+            flush()
+            n = 0
+            parts = c // chunk
+            base, extra = divmod(c, parts)
+            off = 0
+            for i in range(parts):
+                size = base + (1 if i < extra else 0)
+                secs.append([True, [(key, c)], size, off])
+                off += size
+            continue
+        cur.append((key, c))
+        n += c
+        if n > chunk:
+            secs.append([False, list(cur), n, 0])
+            del cur[:]
+            n = 0
+    flush()
+    out = []
+    for _, gs, limit, offset in secs:
+        lst = []
+        for key, c in gs:
+            e = {"item_count": c, "month": key[1], "year": key[0]}
+            if unit != "month":
+                e = {"day": key[2], "item_count": c, "month": key[1], "year": key[0]}
+            lst.append(e)
+        out.append({"limit": limit, "list": lst, "offset": offset})
+    return out
 
 
 def fake_image(concept, text=""):
@@ -166,9 +219,9 @@ class FakeDSM:
                     return self.ok({"list": [self.serialize(it, jparam(p, "additional", []))
                                              for it in hits[off:off + lim]]})
                 if method == "get_search_timeline":
-                    # 分段規則已用真實 NAS 的 60 組回應驗證過（見 sse-filter.build_sections）
+                    # 分段規則已用真實 NAS 的 60 組回應驗證過（見 internal/filter 的 buildSections）
                     unit = jparam(p, "timeline_group_unit", "day")
-                    return self.ok({"section": FILTER.build_sections(hits, unit)})
+                    return self.ok({"section": build_sections(hits, unit)})
             return self.err(103)
 
     @staticmethod
