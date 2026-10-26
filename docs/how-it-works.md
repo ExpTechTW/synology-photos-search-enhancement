@@ -19,7 +19,7 @@ patched, and everything can be removed.
 └──────────────────────────────────────────────────────────────────────────────────────┘
         │ read-only
 ┌─ sse-engine · photo owner's account, nginx group · systemd ─────────────────────────┐
-│ vectors in memory (numpy, int8 × 512) + SQLite (OCR text, tags, times)               │
+│ vectors in memory (int8 × 512, scored on all CPU cores) + SQLite (OCR text, tags)    │
 │ /run/sse-engine/engine.sock: search word → query embedding (cached) → matching ids  │
 └──────────────────────────────────────────────────────────────────────────────────────┘
         │ unix socket
@@ -30,21 +30,24 @@ patched, and everything can be removed.
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-| Component | Runs as | Python |
-|---|---|---|
-| `sse-filter` ([sse/data/sse-filter.py](../sse/data/sse-filter.py)) | nginx worker user | DSM's built-in 3.8, standard library only |
-| `sse-indexer`, `sse-engine` ([sse/](../sse/)) | photo owner | 3.12 + numpy in `/usr/local/sse/venv` |
-| `sse` command | root for installing and maintenance; switches to the owner for index commands | same |
+Everything is one static Go binary, `/usr/local/sse/sse` (about 6 MB, no dependencies on the NAS; built for x86_64,
+ARM64 and ARMv7). The services are subcommands of it:
 
-Only the filter sits on DSM's critical path, so it is small, uses only the standard library, and forwards anything it
-does not understand unchanged. Everything that needs numpy, a model server or the DSM password runs under the photo
-owner's account, never as root.
+| Component | Command | Runs as | Code |
+|---|---|---|---|
+| `sse-filter` | `sse filter` | nginx worker user | [internal/filter](../internal/filter) |
+| `sse-indexer` | `sse index` | photo owner | [internal/indexer](../internal/indexer) |
+| `sse-engine` | `sse serve` | photo owner, nginx group | [internal/server](../internal/server), [internal/search](../internal/search) |
+| `sse` command | `sse status`, `sse apply`… | root for installing and maintenance; switches to the owner for index commands | [internal/admin](../internal/admin), [internal/engine](../internal/engine) |
+
+Only the filter sits on DSM's critical path, so it is small and forwards anything it does not understand unchanged.
+Everything that needs a model server or the DSM password runs under the photo owner's account, never as root.
 
 ### What changes on DSM
 
 | Path | |
 |---|---|
-| `/usr/local/sse/` | Program, uv, private Python, the filter (owned by root) |
+| `/usr/local/sse/` | The program (one binary, owned by root) |
 | `/usr/local/bin/sse` | The command |
 | `/usr/local/etc/sse/` | Install record, filter settings (generated from `config.yml`), emergency switch |
 | `/var/log/sse/` | Filter and audit logs |
@@ -86,7 +89,10 @@ one OCR request in flight, each carrying a single image or text.
 
 Changing the embedding model or image size re-queues every photo's embedding. Changing the OCR model re-queues OCR.
 Writes are conditional on the thumbnail's `cache_key`, so a photo that changed or was deleted while being processed is
-not written. Only one thread writes to the database.
+not written. Only one goroutine writes to the database.
+
+While the model server works on one photo, the indexer already fetches the next photo's thumbnail from DSM, so the
+model server never waits for DSM.
 
 **Progress**: the indexer writes its live state (phase, scan progress, pause reason, recent speed) to
 `indexer-status.json` next to the database. `sse status` combines it with the totals in the database to show
@@ -97,11 +103,12 @@ percentages and an estimate of the time left.
 ### The engine decides which photos match
 
 Synology Photos sorts search results by time, so the question is *which* photos match, not how to rank them
-([search.py](../sse/search.py)).
+([internal/search](../internal/search/search.go)).
 
 1. **Query embedding** (LRU cache of 2,048 entries), cut to the first 512 dimensions and normalised. EmbeddingGemma
    is trained so that its leading dimensions work on their own.
-2. **Image vectors** are kept in memory as int8 × 512 (516 bytes per photo) and compared with every photo.
+2. **Image vectors** are kept in memory as int8 × 512 (516 bytes per photo) and compared with every photo, split
+   across all CPU cores (about 5 ms for 20,000 photos on a 4-core Celeron J4125).
 3. **Hub correction**: some photos (certain screenshots, for example) are similar to almost every query and would
    appear in unrelated searches. Each photo's average score over a set of generic queries is measured, and the part
    above the overall average is subtracted.

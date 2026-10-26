@@ -18,7 +18,7 @@
 └──────────────────────────────────────────────────────────────────────────────────────┘
         │ 唯讀
 ┌─ sse-engine ·照片擁有者的帳號、nginx 群組 · systemd ──────────────────────────────┐
-│ 向量常駐記憶體（numpy，int8 × 512）＋ SQLite（OCR 文字、標籤、時間）                 │
+│ 向量常駐記憶體（int8 × 512，比對時用上所有 CPU 核心）＋ SQLite（OCR 文字、標籤）     │
 │ /run/sse-engine/engine.sock：搜尋字 → 查詢 embedding（快取）→ 命中的照片 id         │
 └──────────────────────────────────────────────────────────────────────────────────────┘
         │ unix socket
@@ -29,20 +29,24 @@
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-| 元件 | 執行身分 | Python |
-|---|---|---|
-| `sse-filter`（[sse/data/sse-filter.py](../sse/data/sse-filter.py)） | nginx worker | DSM 內建的 3.8，只用標準庫 |
-| `sse-indexer`、`sse-engine`（[sse/](../sse/)） | 照片擁有者 | `/usr/local/sse/venv` 的 3.12 + numpy |
-| `sse` 指令 | 安裝與維運用 root；索引相關指令切換成擁有者 | 同上 |
+全部是一個靜態連結的 Go 執行檔 `/usr/local/sse/sse`（約 6 MB，NAS 上不需要任何其他東西；提供 x86_64、ARM64、ARMv7 版本），
+各個服務都是它的子指令：
 
-只有 filter 在 DSM 的關鍵路徑上，所以它要最小、只用標準庫、看不懂的東西一律原樣轉發。需要 numpy、要連模型服務、
-要用 DSM 密碼的部分都以照片擁有者的身分執行，不用 root。
+| 元件 | 指令 | 執行身分 | 程式 |
+|---|---|---|---|
+| `sse-filter` | `sse filter` | nginx worker | [internal/filter](../internal/filter) |
+| `sse-indexer` | `sse index` | 照片擁有者 | [internal/indexer](../internal/indexer) |
+| `sse-engine` | `sse serve` | 照片擁有者、nginx 群組 | [internal/server](../internal/server)、[internal/search](../internal/search) |
+| `sse` 指令 | `sse status`、`sse apply`… | 安裝與維運用 root；索引相關指令切換成擁有者 | [internal/admin](../internal/admin)、[internal/engine](../internal/engine) |
+
+只有 filter 在 DSM 的關鍵路徑上，所以它要小、看不懂的東西一律原樣轉發。要連模型服務、要用 DSM 密碼的部分
+都以照片擁有者的身分執行，不用 root。
 
 ### 對 DSM 的變更
 
 | 路徑 | |
 |---|---|
-| `/usr/local/sse/` | 程式、uv、獨立的 Python、filter（root 擁有） |
+| `/usr/local/sse/` | 程式（一個執行檔，root 擁有） |
 | `/usr/local/bin/sse` | 指令 |
 | `/usr/local/etc/sse/` | 安裝紀錄、filter 設定（由 `config.yml` 產生）、緊急開關 |
 | `/var/log/sse/` | filter 與操作紀錄的 log |
@@ -79,7 +83,9 @@
 - 縮圖尺寸不存在（有些 HEIC 沒有 `m`）就改用其他尺寸。
 
 換 embedding 模型或圖片尺寸會重新排入每張照片的 embedding；換 OCR 模型會重新排入 OCR。寫入時以縮圖的 `cache_key`
-為條件，處理期間照片被改掉或刪掉就不寫入。只有一個執行緒寫資料庫。
+為條件，處理期間照片被改掉或刪掉就不寫入。只有一個 goroutine 寫資料庫。
+
+模型服務處理一張照片的同時，索引器已經先向 DSM 取下一張的縮圖，模型服務不必等 DSM。
 
 **進度**：索引器把即時狀態（階段、掃描進度、暫停原因、最近的處理速度）寫到資料庫旁的 `indexer-status.json`，
 `sse status` 再加上資料庫裡的總數，算出百分比與預估剩餘時間。
@@ -88,10 +94,11 @@
 
 ### engine：決定哪些照片算命中
 
-Synology Photos 的搜尋結果依時間排序，所以要決定的是「哪些算命中」，不是排名（[search.py](../sse/search.py)）。
+Synology Photos 的搜尋結果依時間排序，所以要決定的是「哪些算命中」，不是排名（[internal/search](../internal/search/search.go)）。
 
 1. **查詢 embedding**（LRU 快取 2,048 筆），取前 512 維再正規化。EmbeddingGemma 訓練時就讓前面的維度可以單獨使用。
-2. **圖片向量**以 int8 × 512 常駐記憶體（每張 516 bytes），每次跟所有照片比對。
+2. **圖片向量**以 int8 × 512 常駐記憶體（每張 516 bytes），每次跟所有照片比對，分給所有 CPU 核心
+   （四核 Celeron J4125 上 2 萬張約 5 ms）。
 3. **hub 校正**：有些照片（例如某些截圖）跟什麼查詢都很像，會出現在各種不相關的搜尋裡。先算出每張照片對一組
    通用查詢的平均分數，比對時扣掉它高於整體平均的部分。
 4. **門檻**：分數 ≥ `max(min_score, 最高分 − max_drop)` 的照片，最多 `max_results` 張。不用「平均 + N 個標準差」：
