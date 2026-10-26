@@ -52,12 +52,12 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 
 安裝程式會：
 
-1. 從 GitHub 下載最新版，並驗證 SHA-256。
+1. 從 GitHub 的最新版下載這台 NAS 的 CPU（x86_64、ARM64 或 ARMv7）用的 `sse` 程式，並驗證 SHA-256。
+   它是單一個不依賴其他東西的檔案，裝在 `/usr/local/sse/sse`；不會用到、也不會改動 NAS 上的其他程式（Python、程式庫）。
 2. **檢查** DSM、Synology Photos、nginx、systemd。有問題就把所有問題列出來，什麼都不改。
-3. 下載 [uv](https://github.com/astral-sh/uv) 和獨立的 Python 3.12 到 `/usr/local/sse`，不碰系統的 Python。
-4. **詢問** DSM 帳號、embedding 服務、OCR 模型，寫成 `~/sse/config.yml`（權限 600）。
-5. 用這份設定**測試**：DSM 登入、縮圖、圖片與文字 embedding、OCR。
-6. 安裝服務、讓 nginx 經過 filter，並確認流量真的有經過。任何一步失敗都會**自動回復**到安裝前的狀態。
+3. **詢問** DSM 帳號、embedding 服務、OCR 模型，寫成 `~/sse/config.yml`（權限 600）。
+4. 用這份設定**測試**：DSM 登入、縮圖、圖片與文字 embedding、OCR。
+5. 安裝服務、讓 nginx 經過 filter，並確認流量真的有經過。任何一步失敗都會**自動回復**到安裝前的狀態。
 
 之後索引器會在背景建立索引，用 `sudo sse status` 看進度。
 
@@ -73,7 +73,11 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 | `--dry-run` | 只檢查 |
 
 不想直接把下載的腳本交給 shell 執行？先下載 [install.sh](install.sh) 看過，再執行 `sudo sh install.sh`。
-在這個 repo 的原始碼目錄裡執行 `sudo ./install.sh`，安裝的是這份原始碼，不是 release（開發用）。
+開發時用 `sudo SSE_BINARY=/path/to/sse sh install.sh` 安裝指定的檔案，不下載 release（在這個 repo 的原始碼目錄裡執行
+`sudo ./install.sh` 則安裝它的 `build/sse`），見[開發](#開發)。
+
+從還在用 Python 的舊版升級也一樣（`sudo sse update` 或上面的指令）：`config.yml`、索引與設定都會保留，
+`/usr/local/sse` 裡舊版的 Python 檔案會刪掉。
 
 ## 設定
 
@@ -139,7 +143,8 @@ sudo sse update            # 更新；config.yml 和索引都會保留
 用 `sudo sse update --channel pre-release`（或 `release`）切換，之後的更新都沿用。`sse update` 不會降版：從
 pre-release 回到比較舊的 release 要加 `--force`，或用 `--version 版本` 指定。
 
-更新時新版會先裝在舊版旁邊，全部正常才切換過去。新版沒通過檢查（服務要能啟動、DSM 要能回應）就自動換回舊版。
+更新時會下載新版的 `sse`（驗證 SHA-256），保留舊版的同時換上新版，由新版執行安裝流程。新版沒通過檢查
+（服務要能啟動、DSM 要能回應）就自動換回舊版，並用舊版重新啟動服務。
 
 `sse` 指令壞掉時，也可以不透過它更新：
 
@@ -218,13 +223,18 @@ sudo rm -rf /usr/local/sse /usr/local/etc/sse /usr/local/bin/sse /var/log/sse /e
 ## 開發
 
 ```sh
-sh tests/run.sh          # 全部（第一次會下載 Python 3.8 / 3.12，並編譯跟 DSM 7.3 同版的 nginx 1.23.1）
-sh tests/run.sh quick    # 不需要 nginx 的部分
+make                     # 編譯這台電腦用的 build/sse（需要 Go；不用 cgo，沒有其他依賴）
+make release             # dist/sse-linux-{amd64,arm64,armv7}.tar.gz，跟 GitHub 上發佈的一樣
+sh tests/run.sh          # 全部（第一次會編譯跟 DSM 7.3 同版的 nginx 1.23.1）
+sh tests/run.sh quick    # 只跑 Go 的測試
 ```
 
-測試用假的 DSM、假的模型服務、假的 `systemctl`，搭配真的 nginx 與 DSM 的 Python 3.8。
-`tests/test_install_sandbox.py` 會從安裝到解除安裝實際跑一遍 `install.sh`，包含用假的 GitHub release 測試
-`curl | sh` 安裝與更新。
+要在 NAS 上試自己編譯的版本：交叉編譯（`GOOS=linux GOARCH=amd64 make build/sse`，或 `arm64`、
+`GOARCH=arm GOARM=7`），複製過去後執行 `sudo SSE_BINARY=./sse sh install.sh`。
+
+測試用假的 DSM、假的模型服務、假的 `systemctl`，搭配真的 nginx。`tests/test_install_sandbox.py` 會從安裝到解除安裝
+實際跑一遍 `install.sh` 與 `sse`，包含用假的 GitHub release（由 `scripts/package.sh` 打包）測試 `curl | sh` 安裝與更新，
+以及從 Python 版升級。
 
 推到 `main` 並通過測試會發佈 pre-release，推到 `release` 會發佈 release
 （[.github/workflows/ci-release.yml](.github/workflows/ci-release.yml)，打包用

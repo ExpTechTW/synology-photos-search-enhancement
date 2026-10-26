@@ -12,7 +12,7 @@ RuntimeDirectory=sse-engine
 # systemd 219（DSM 7.3）建這個目錄時用的是使用者的主要群組，不是 Group=，所以目錄要讓其他人能進入；
 # 存取由 socket 本身的 0660（擁有者 + nginx 群組）控制
 RuntimeDirectoryMode=0755
-ExecStart=$engine_python -I -m sse --config $config serve
+ExecStart=$binary --config $config serve
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes

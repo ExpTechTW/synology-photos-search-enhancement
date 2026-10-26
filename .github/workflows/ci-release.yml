@@ -1,6 +1,8 @@
 # 測試；通過後發佈 release（版本 vYYYY.MM.DD+build.N）：
 #   main 分支    → pre-release（sudo sse update --channel pre-release 才會裝到）
 #   release 分支 → release（預設的更新管道）
+# release 的檔案：sse-linux-{amd64,arm64,armv7}.tar.gz（與 .sha256），以及給 Python 版 sudo sse update 用的
+# synology-photos-search-enhancement.tar.gz（見 scripts/package.sh）。
 name: CI & Release
 
 on:
@@ -20,15 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
         with:
-          version: "0.11.21"
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Cache nginx build
         uses: actions/cache@v4
         with:
           path: ~/.cache/sse-tests
           key: sse-tests-nginx-1.23.1-pcre2-10.40-${{ runner.os }}
-      - name: Test (filter on Python 3.8, sse on 3.12, end-to-end with nginx 1.23.1)
+      - name: Build for every platform
+        run: |
+          for a in amd64 arm64; do CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -o /dev/null ./cmd/sse; done
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null ./cmd/sse
+      - name: Test (go vet, go test, end-to-end with nginx 1.23.1)
         run: sh tests/run.sh
         env:
           SSE_TEST_TMP: /tmp
@@ -39,6 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Next version
         id: ver
         env:
