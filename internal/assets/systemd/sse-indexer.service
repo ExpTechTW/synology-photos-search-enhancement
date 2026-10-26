@@ -7,7 +7,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=$euser
-ExecStart=$engine_python -I -m sse --config $config index
+ExecStart=$binary --config $config index
 Restart=on-failure
 RestartSec=60
 # 2 = 資料庫屬於另一個帳號，重啟也沒用

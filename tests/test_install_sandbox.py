@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # 安裝 / 維運 / 解除安裝的完整流程：照 README 的步驟跑真的 install.sh 與 sse 指令。
-# 沙盒裡模擬 DSM 的檔案配置；真的 nginx（DSM 風格的 nginx.conf）、真的 sse-filter（DSM 的 Python 3.8）、
-# 真的索引器與搜尋服務（install.sh 建的 Python 3.12 venv）；假 DSM（兩個帳號）、假 LLM、假 systemctl。
+# 沙盒裡模擬 DSM 的檔案配置；真的 nginx（DSM 風格的 nginx.conf）、真的 sse（filter、索引器、搜尋服務都是它）；
+# 假 DSM（兩個帳號）、假 LLM、假 systemctl、假 GitHub（release 由 scripts/package.sh 編譯打包）。
 #
-#   SSE_NGINX_BIN=/path/to/nginx SSE_FILTER_PY=/path/to/python3.8 SSE_TEST_TMP=/tmp \
+#   make build/sse && SSE_BIN=$PWD/build/sse SSE_NGINX_BIN=/path/to/nginx SSE_TEST_TMP=/tmp \
 #       python3 -m unittest tests.test_install_sandbox -v
 import grp
 import hashlib
@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -28,8 +29,7 @@ import fake_github  # noqa: E402
 import fake_llm  # noqa: E402
 
 NGINX = os.environ.get("SSE_NGINX_BIN")
-PY38 = os.environ.get("SSE_FILTER_PY", sys.executable)
-UV = shutil.which("uv")
+SSE_BIN = os.environ.get("SSE_BIN")
 USER = pwd.getpwuid(os.getuid()).pw_name
 UNITS = ("sse-filter.service", "sse-nginx-guard.service", "sse-nginx-guard.path", "sse-nginx-guard.timer",
          "sse-engine.service", "sse-indexer.service")
@@ -62,6 +62,18 @@ def mode(path):
     return os.stat(path).st_mode & 0o777
 
 
+def break_serve(src):
+    """做一個壞掉的版本：搜尋服務（sse … serve）起不來，其他指令正常。"""
+    path = os.path.join(src, "cmd/sse/main.go")
+    with open(path) as f:
+        text = f.read()
+    head = "func run(argv []string) int {\n"
+    assert head in text
+    with open(path, "w") as f:
+        f.write(text.replace(head, head + '\tif len(argv) > 0 && argv[len(argv)-1] == "serve" {\n'
+                             '\t\tfmt.Fprintln(os.Stderr, "broken build")\n\t\treturn 1\n\t}\n', 1))
+
+
 def wait_for(cond, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
@@ -71,7 +83,7 @@ def wait_for(cond, timeout=10):
     return False
 
 
-@unittest.skipUnless(NGINX and UV, "需要 SSE_NGINX_BIN 指向 nginx 執行檔，以及 uv")
+@unittest.skipUnless(NGINX and SSE_BIN, "需要 SSE_NGINX_BIN 指向 nginx 執行檔、SSE_BIN 指向 sse 執行檔（make build/sse）")
 class Install(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -124,14 +136,9 @@ http {
         cls.write("etc/nginx/nginx.conf", cls.original)
         cls.write("bin/nginx", "#!/bin/sh\nexec %s -e %s/var/nginx-startup.log \"$@\"\n" % (NGINX, r), 0o755)
         cls.write("bin/systemctl", "#!/bin/sh\nexec %s %s/fake_systemctl.py \"$@\"\n" % (sys.executable, HERE), 0o755)
-
-        def uv_dir(*a):
-            return subprocess.run([UV] + list(a), stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-
-        # install.sh 平常會下載 uv 與 Python 到 /usr/local/sse；測試改用本機的 uv 與它的快取
-        cls.env = dict(os.environ, SSE_ROOT=r, SSE_PYTHON=PY38, SSE_NGINX=os.path.join(r, "bin/nginx"),
-                       SSE_SYSTEMCTL=os.path.join(r, "bin/systemctl"), SSE_UV=UV, SSE_ENGINE_WAIT="20",
-                       UV_PYTHON_INSTALL_DIR=uv_dir("python", "dir"), UV_CACHE_DIR=uv_dir("cache", "dir"))
+        env = {k: v for k, v in os.environ.items() if k not in ("SSE_BINARY", "SSE_SOURCE", "SSE_CHANNEL", "SSE_WORK")}
+        cls.env = dict(env, SSE_ROOT=r, SSE_NGINX=os.path.join(r, "bin/nginx"),
+                       SSE_SYSTEMCTL=os.path.join(r, "bin/systemctl"), SSE_ENGINE_WAIT="20")
         cls.fake = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_synoscgi.py"),
                                      os.path.join(r, "run/synoscgi.sock"), os.path.join(r, "var/requests.log"),
                                      "dsm-engine"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -147,6 +154,7 @@ http {
         cls.write("good.yml", cls.config_text(), 0o600)
         cls.gh = fake_github.FakeGitHub(os.path.join(r, "github"))
         cls.env["SSE_GITHUB_API"] = cls.gh.url
+        cls.env["SSE_GITHUB_URL"] = cls.gh.web
 
     @classmethod
     def config_text(cls, **sections):
@@ -198,10 +206,10 @@ http {
     # ── 工具 ──
 
     def install(self, *args):
-        """sudo ./install.sh …"""
-        r = subprocess.run(["sh", os.path.join(REPO, "install.sh")] + list(args), env=self.env, preexec_fn=dsm_login_umask,
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                           timeout=600)
+        """sudo SSE_BINARY=build/sse ./install.sh …（安裝本機編譯的 sse）"""
+        r = subprocess.run(["sh", os.path.join(REPO, "install.sh")] + list(args), env=dict(self.env, SSE_BINARY=SSE_BIN),
+                           preexec_fn=dsm_login_umask, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=600)
         return r.returncode, r.stdout
 
     def curl_sh(self, *args):
@@ -218,15 +226,19 @@ http {
 
     def check_modes(self):
         """在 umask 077 下安裝，filter（http）與照片擁有者照樣要能執行程式、讀 filter 的設定。"""
-        site = subprocess.run([self.p("usr/local/sse/venv/bin/python"), "-I", "-c", "import sse; print(sse.__file__)"],
-                              stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-        for rel in ("usr/local/sse", "usr/local/sse/venv", "usr/local/sse/venv/bin", "usr/local/etc/sse",
-                    "usr/local/bin/sse"):
+        for rel in ("usr/local/sse", "usr/local/sse/sse", "usr/local/etc/sse", "usr/local/bin/sse"):
             self.assertEqual(mode(self.p(rel)), 0o755, rel)
-        for path in (self.p("usr/local/sse/sse-filter.py"), self.p("usr/local/etc/sse/filter.json"), site):
-            self.assertEqual(mode(path) & 0o044, 0o044, path)
+        self.assertEqual(os.readlink(self.p("usr/local/bin/sse")), self.p("usr/local/sse/sse"))
+        self.assertEqual(mode(self.p("usr/local/etc/sse/filter.json")) & 0o044, 0o044)
         self.assertEqual(mode(self.data), 0o700)                    # config.yml 與照片裡的文字：只有擁有者
         self.assertEqual(mode(os.path.join(self.data, "config.yml")), 0o600)
+        self.assertEqual(sorted(os.listdir(self.p("usr/local/sse"))), ["sse"])   # 沒有 sse.prev 或 Python 版的東西
+        self.no_work_dirs()
+
+    def no_work_dirs(self):
+        """下載用的暫存目錄（/usr/local/.sse-work.*）都清掉了。"""
+        self.assertEqual([n for n in os.listdir(self.p("usr/local")) if n.startswith(".sse-work")]
+                         if os.path.isdir(self.p("usr/local")) else [], [])
 
     def install_args(self, *extra):
         return ["--user", USER, "--data-dir", self.data, "--probe-url", self.probe, "--yes"] + list(extra)
@@ -301,9 +313,10 @@ http {
         rels = ["usr/local/sse", "usr/local/etc/sse", "usr/local/bin/sse", "etc/nginx/nginx.conf.sse-orig", "var/log/sse",
                 "run/sse", "run/sse-engine"] + ["etc/systemd/system/" + u for u in UNITS]
         for rel in rels:
-            self.assertFalse(os.path.exists(self.p(rel)), rel)
+            self.assertFalse(os.path.lexists(self.p(rel)), rel)
         self.assertEqual(self.conf(), self.original)
         self.assertTrue(self.dsm_ok())
+        self.no_work_dirs()
 
     # ── 安裝前 ──
 
@@ -518,7 +531,7 @@ http {
 
     def test_16_upgrade_in_place(self):
         state = json.loads(self.read("usr/local/etc/sse/state.json"))
-        os.chmod(self.p("usr/local/sse/venv/bin"), 0o700)            # 舊版在 umask 077 下裝出來的樣子
+        os.chmod(self.p("usr/local/sse"), 0o700)                      # 在 umask 077 下裝出來的樣子
         unit = self.p("etc/systemd/system/sse-indexer.service")
         with open(unit, "a") as f:
             f.write("# 舊版範本\n")
@@ -540,13 +553,13 @@ http {
         self.gh.add("v2026.10.25+build.1")
         rc, out = self.curl_sh("--yes", "--probe-url", self.probe)
         self.assertEqual(rc, 0, out)
-        self.assertIn("下載 v2026.10.25+build.1", out)
+        self.assertIn("下載最新版", out)
+        self.assertIn("最新版：v2026.10.25+build.1", out)
         self.assertIn("目前索引 20 張", out)
         self.assertEqual(self.version(), "2026.10.25+build.1")
         state = json.loads(self.read("usr/local/etc/sse/state.json"))
         self.assertEqual((state["channel"], state["source"]), ("release", "v2026.10.25+build.1"))
-        self.assertTrue(os.path.exists(self.p("usr/local/sse/install.sh")))
-        self.assertFalse(os.path.exists(self.p("usr/local/sse/venv.prev")))
+        self.check_modes()
         self.assertIn("更新管道：release（release v2026.10.25+build.1", self.sse("status")[1])
         self.finds("cat", CATS)
 
@@ -575,16 +588,14 @@ http {
         self.finds("cat", CATS)
 
     def test_19_failed_update_rolls_back(self):
-        def broken(src):   # 新版的搜尋服務起不來
-            with open(os.path.join(src, "sse/server.py"), "a") as f:
-                f.write("\nraise SystemExit('broken build')\n")
-        self.gh.add("v2026.10.26+build.3", prerelease=True, edit=broken)
+        self.gh.add("v2026.10.26+build.3", prerelease=True, edit=break_serve)   # 新版的搜尋服務起不來
         rc, out = self.sse("update")
         self.assertEqual(rc, 1, out)
         self.assertIn("搜尋服務沒有在 20 秒內回應", out)
         self.assertIn("換回原本的版本", out)
         self.assertEqual(self.version(), "2026.10.26+build.2")
-        self.assertFalse(os.path.exists(self.p("usr/local/sse/venv.prev")))
+        self.assertEqual(sorted(os.listdir(self.p("usr/local/sse"))), ["sse"])   # sse.prev 換回去了
+        self.no_work_dirs()
         self.assertTrue(wait_for(lambda: sock_alive(self.engine_sock), timeout=20))
         # filter 也用舊版重啟過：等 nginx 的 fail_timeout 過了，搜尋結果又有 AI 找到的照片
         self.assertTrue(wait_for(lambda: len(self.find("alice", "mountain")) == 3, timeout=15))
@@ -594,14 +605,14 @@ http {
 
     def test_20_bad_checksum_refused(self):
         rel = self.gh.releases[-1]
-        tarball = os.path.join(self.gh.root, rel["assets"][0]["browser_download_url"].split("/download/")[1])
-        with open(tarball, "ab") as f:
+        with open(self.gh.asset_path(rel["tag_name"]), "ab") as f:
             f.write(b"tampered")
-        self.gh.releases[-1] = dict(rel, tag_name="v2026.10.26+build.4")
+        self.gh.releases[-1] = dict(rel, tag_name="v2026.10.26+build.4")   # 網址還是指向剛剛改過的檔案
         rc, out = self.sse("update", "--force")
         self.assertEqual(rc, 1, out)
         self.assertIn("sha256 不符", out)
         self.assertEqual(self.version(), "2026.10.26+build.2")
+        self.no_work_dirs()
 
     def test_21_uninstall_keeps_data(self):
         rc, out = self.sse("uninstall", "--yes")
@@ -626,6 +637,143 @@ http {
         self.assertIn("資料目錄已刪除", out)
         self.nothing_installed()
         self.assertFalse(os.path.exists(self.data))
+
+
+    # ── 從 Python 版升級 ──
+
+    def python_era_install(self):
+        """做出 Python 版安裝後的樣子：/usr/local/sse 裡有 venv、uv、sse-filter.py，服務用 Python 執行。"""
+        r, prefix = self.root, self.p("usr/local/sse")
+        for d in ("venv/bin", "python/cpython-3.12", "bin", "cache"):
+            os.makedirs(os.path.join(prefix, d), exist_ok=True)
+        py = os.path.join(prefix, "venv/bin/python")
+        self.write(py, "#!/bin/sh\nexec sleep 3600\n", 0o755)        # 舊的服務：只要跑得起來
+        for name in ("sse-filter.py", "install.sh", "bin/uv"):
+            self.write(os.path.join(prefix, name), "# Python 版\n", 0o755)
+        os.makedirs(self.p("usr/local/bin"), exist_ok=True)
+        self.write("usr/local/bin/sse", '#!/bin/sh\nexec "%s" -I -m sse "$@"\n' % py, 0o755)
+        group = grp.getgrgid(os.getgid()).gr_name
+        cfg_path = os.path.join(self.data, "config.yml")
+        units = {
+            "sse-filter.service": "[Service]\nType=simple\nRuntimeDirectory=sse\n"
+                                  "ExecStart=%s -I %s/sse-filter.py --config %s/usr/local/etc/sse/filter.json\n"
+                                  % (py, prefix, r),
+            "sse-engine.service": "[Service]\nType=simple\nRuntimeDirectory=sse-engine\n"
+                                  "ExecStart=%s -I -m sse --config %s serve\n" % (py, cfg_path),
+            "sse-indexer.service": "[Service]\nType=simple\nExecStart=%s -I -m sse --config %s index\n" % (py, cfg_path),
+            "sse-nginx-guard.service": "[Service]\nType=oneshot\nExecStart=%s -I -m sse guard\n" % py,
+            "sse-nginx-guard.path": "[Path]\nPathChanged=%s\n" % self.conf_path,
+            "sse-nginx-guard.timer": "[Timer]\nOnUnitActiveSec=10min\n",
+        }
+        os.makedirs(self.p("etc/systemd/system"), exist_ok=True)
+        for name, text in units.items():
+            self.write("etc/systemd/system/" + name, "# Python 版\n" + text)
+        os.makedirs(os.path.join(self.data, "data"), exist_ok=True)
+        os.makedirs(os.path.join(self.data, "logs"), exist_ok=True)
+        os.chmod(self.data, 0o700)
+        self.write(cfg_path, self.config_text(), 0o600)
+        os.makedirs(self.p("usr/local/etc/sse"), exist_ok=True)
+        os.makedirs(self.p("var/log/sse"), mode=0o750, exist_ok=True)
+        filter_cfg = {
+            "listen": self.p("run/sse/filter.sock"), "socket_mode": "0660", "upstream": self.p("run/synoscgi.sock"),
+            "status_file": self.p("run/sse/status.json"), "kill_switch": self.p("usr/local/etc/sse/DISABLE"),
+            "photos_info": self.p("var/packages/SynologyPhotos/INFO"), "mode": "engine",
+            "inject_photos_version": "1.9.0-10120", "engine_socket": self.engine_sock, "max_inject": 500,
+            "log_file": self.p("var/log/sse/filter.log"), "log_keep_days": 3,
+            "capture_file": self.p("run/sse/capture.jsonl"), "capture_max": 7}
+        self.write("usr/local/etc/sse/filter.json", json.dumps(filter_cfg, indent=2, ensure_ascii=False) + "\n")
+        self.state = {
+            "version": "2026.10.20+build.1", "installed_at": 1700000000, "updated_at": 1700000000, "dsm_build": "86009",
+            "channel": "release", "source": "v2026.10.20+build.1", "photos_version": "1.9.0-10120",
+            "nginx_user": USER, "nginx_group": group, "probe_url": self.probe, "auto_apply": True, "user": USER,
+            "data_dir": os.path.realpath(self.data)}
+        self.write("usr/local/etc/sse/state.json", json.dumps(self.state, indent=2, ensure_ascii=False))
+        # nginx.conf：Python 版套用的標記（格式跟 Go 版相同）
+        stmt = "server unix:%s/run/synoscgi.sock;" % r
+        managed = self.original.replace("        %s\n" % stmt, (
+            "        # >>> synology-search-enhancement original=%s >>>\n"
+            "        server unix:%s/run/sse/filter.sock max_fails=1 fail_timeout=5s;\n"
+            "        server unix:%s/run/synoscgi.sock backup;\n"
+            "        # <<< synology-search-enhancement <<<\n") % (json.dumps(stmt), r, r))
+        self.assertNotEqual(managed, self.original)
+        self.write("etc/nginx/nginx.conf.sse-orig", self.original)
+        self.set_conf(managed)
+        systemctl = self.env["SSE_SYSTEMCTL"]
+        subprocess.run([systemctl, "enable"] + list(UNITS), env=self.env, check=True)
+        subprocess.run([systemctl, "start", "sse-filter.service", "sse-engine.service", "sse-indexer.service",
+                        "sse-nginx-guard.path", "sse-nginx-guard.timer"], env=self.env, check=True)
+        self.assertTrue(self.dsm_ok())   # 舊的 filter 不在：nginx 直連 synoscgi（backup）
+
+    def python_era_files(self):
+        """Python 版安裝的檔案（比對是否原樣還原用）。"""
+        files = {}
+        for top in ("usr/local/sse", "usr/local/bin", "usr/local/etc/sse", "etc/systemd/system"):
+            for d, _, names in os.walk(self.p(top)):
+                for n in names:
+                    path = os.path.join(d, n)
+                    files[os.path.relpath(path, self.root)] = (os.path.islink(path), mode(path), self.read(path))
+        files["nginx.conf"] = (False, mode(self.conf_path), self.conf().encode())
+        return files
+
+    def old_update(self, tag, channel):
+        """Python 版的 sudo sse update：舊的 install.sh 從 release 下載 synology-photos-search-enhancement.tar.gz、
+        驗證後解開到 /tmp，執行裡面的（新版）install.sh update，並用環境變數告訴它版本與管道。"""
+        work = tempfile.mkdtemp(prefix="old-update.", dir=self.root)
+        with tarfile.open(self.gh.asset_path(tag, fake_github.LEGACY)) as t:
+            t.extractall(work, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        script = os.path.join(work, "synology-photos-search-enhancement", "install.sh")
+        self.assertTrue(os.path.exists(os.path.join(os.path.dirname(script), "pyproject.toml")))   # 舊版檢查這個
+        r = subprocess.run(["sh", script, "update"], preexec_fn=dsm_login_umask, stdin=subprocess.DEVNULL,
+                           env=dict(self.env, SSE_WORK=work, SSE_SOURCE=tag, SSE_CHANNEL=channel),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
+        self.assertFalse(os.path.exists(work))
+        return r.returncode, r.stdout
+
+    def test_23_failed_upgrade_from_python_version_restores_it(self):
+        self.python_era_install()
+        before = self.python_era_files()
+        self.gh.add("v2026.10.27+build.1", prerelease=True, edit=break_serve)
+        rc, out = self.old_update("v2026.10.27+build.1", "pre-release")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("升級中", out)
+        self.assertIn("搜尋服務沒有在 20 秒內回應", out)
+        self.assertIn("換回原本的版本", out)
+        # Python 版的檔案、服務、安裝紀錄、filter 設定、nginx.conf 都跟原本一模一樣
+        after = self.python_era_files()
+        self.assertEqual(sorted(after), sorted(before))
+        for path in before:
+            self.assertEqual(after[path], before[path], path)
+        self.no_work_dirs()
+        self.assertTrue(self.dsm_ok())
+
+    def test_24_upgrade_from_python_version(self):
+        if not os.path.exists(self.p("usr/local/sse/venv")):
+            self.python_era_install()
+        rc, out = self.old_update("v2026.10.25+build.1", "release")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("下載 v2026.10.25+build.1", out)
+        self.assertIn("升級中", out)
+        self.assertIn("沿用 %s" % os.path.join(os.path.realpath(self.data), "config.yml"), out)
+        self.assertIn("nginx 設定原本就是套用狀態", out)
+        self.assertEqual(self.version(), "2026.10.25+build.1")
+        # Python 版的程式都清掉了，服務改成執行 sse
+        self.check_modes()
+        for unit in UNITS:
+            text = self.read("etc/systemd/system/" + unit).decode()
+            self.assertNotIn("Python 版", text)
+            self.assertNotIn("python", text)
+            if unit.endswith(".service"):
+                self.assertIn("ExecStart=%s " % self.p("usr/local/sse/sse"), text)
+        # 安裝紀錄、診斷錄製的設定、資料目錄都沿用
+        state = json.loads(self.read("usr/local/etc/sse/state.json"))
+        self.assertEqual((state["installed_at"], state["user"], state["data_dir"], state["channel"], state["source"]),
+                         (1700000000, USER, os.path.realpath(self.data), "release", "v2026.10.25+build.1"))
+        filter_cfg = json.loads(self.read("usr/local/etc/sse/filter.json"))
+        self.assertEqual((filter_cfg["capture_max"], filter_cfg["mode"]), (7, "engine"))
+        self.assertTrue(wait_for(lambda: self.find("alice", "cat") == CATS, timeout=90))
+        rc, out = self.curl_sh("uninstall", "--purge", "--yes")
+        self.assertEqual(rc, 0, out)
+        self.nothing_installed()
 
 
 if __name__ == "__main__":

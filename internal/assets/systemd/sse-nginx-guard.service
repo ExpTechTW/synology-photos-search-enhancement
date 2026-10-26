@@ -4,4 +4,4 @@ Description=Photos search enhancement: nginx guard
 
 [Service]
 Type=oneshot
-ExecStart=$engine_python -I -m sse guard
+ExecStart=$binary guard

@@ -58,13 +58,13 @@ curl -fsSL https://raw.githubusercontent.com/ExpTechTW/synology-photos-search-en
 
 The installer:
 
-1. Downloads the latest release from GitHub and verifies its SHA-256.
+1. Downloads the `sse` program for your NAS's CPU (x86_64, ARM64 or ARMv7) from the latest GitHub release and
+   verifies its SHA-256. It is a single self-contained file, installed as `/usr/local/sse/sse`; nothing else on the
+   NAS (Python, libraries) is used or changed.
 2. **Checks** DSM, Synology Photos, nginx and systemd. If anything is off, it lists every problem and changes nothing.
-3. Downloads [uv](https://github.com/astral-sh/uv) and a private Python 3.12 into `/usr/local/sse`. The system Python
-   is not touched.
-4. **Asks** for the DSM account, the embedding server and the OCR model, and writes `~/sse/config.yml` (mode 600).
-5. **Tests** that config: DSM sign-in, a thumbnail, image and text embedding, and OCR.
-6. Installs the services, routes nginx through the filter and confirms that traffic really flows through it.
+3. **Asks** for the DSM account, the embedding server and the OCR model, and writes `~/sse/config.yml` (mode 600).
+4. **Tests** that config: DSM sign-in, a thumbnail, image and text embedding, and OCR.
+5. Installs the services, routes nginx through the filter and confirms that traffic really flows through it.
    If any step fails, everything is **rolled back** automatically.
 
 Indexing then starts in the background. Check progress with `sudo sse status`.
@@ -80,8 +80,12 @@ Options go after `sh -s --`, for example `curl -fsSL … | sudo sh -s -- --user 
 | `--from-config FILE` | Use this `config.yml` instead of the questions (with `--yes` for a non-interactive install) |
 | `--dry-run` | Checks only |
 
-Prefer not to pipe into a shell? Download [install.sh](install.sh), read it, and run `sudo sh install.sh`. Running
-`sudo ./install.sh` inside a clone of this repository installs that code instead of a release (for development).
+Prefer not to pipe into a shell? Download [install.sh](install.sh), read it, and run `sudo sh install.sh`. For
+development, `sudo SSE_BINARY=/path/to/sse sh install.sh` installs that file instead of a release (running
+`sudo ./install.sh` inside a clone of this repository installs its `build/sse`), see [Development](#development).
+
+Upgrading from an older version that still used Python works the same way (`sudo sse update` or the command above):
+`config.yml`, the index and the settings are kept, and the old Python files in `/usr/local/sse` are removed.
 
 ## Configuration
 
@@ -149,8 +153,9 @@ Switch with `sudo sse update --channel pre-release` (or `release`); later update
 never downgrades: going back from a pre-release to an older release needs `--force`, or `--version TAG` for a
 specific version.
 
-An update installs the new version next to the old one and switches over only when everything works. If the new
-version fails its checks (the services must start and DSM must answer), the old version is put back automatically.
+An update downloads the new `sse` (checking its SHA-256), puts it in place while keeping the old one, and lets the new
+version run the installation. If the new version fails its checks (the services must start and DSM must answer), the
+old version is put back and its services are restarted automatically.
 
 The same works without the `sse` command, for example if it is broken:
 
@@ -234,13 +239,19 @@ regenerated `nginx.conf` since.
 ## Development
 
 ```sh
-sh tests/run.sh          # everything (first run downloads Python 3.8 / 3.12 and builds nginx 1.23.1, as on DSM 7.3)
-sh tests/run.sh quick    # without nginx
+make                     # build/sse for this computer (needs Go; no cgo, no other dependencies)
+make release             # dist/sse-linux-{amd64,arm64,armv7}.tar.gz, as published on GitHub
+sh tests/run.sh          # everything (first run builds nginx 1.23.1, as on DSM 7.3)
+sh tests/run.sh quick    # Go tests only
 ```
 
-The tests use a fake DSM, a fake model server and a fake `systemctl`, together with a real nginx and DSM's
-Python 3.8. `tests/test_install_sandbox.py` runs the real `install.sh` from install to uninstall, including `curl | sh`
-installs and updates from a fake GitHub release.
+To try a build on a NAS, cross-compile it (`GOOS=linux GOARCH=amd64 make build/sse`, or `arm64`, or
+`GOARCH=arm GOARM=7`), copy it over and run `sudo SSE_BINARY=./sse sh install.sh`.
+
+The tests use a fake DSM, a fake model server and a fake `systemctl`, together with a real nginx.
+`tests/test_install_sandbox.py` runs the real `install.sh` and `sse` from install to uninstall, including `curl | sh`
+installs and updates from a fake GitHub release (built with `scripts/package.sh`) and an upgrade from the Python
+version.
 
 Every push to `main` that passes the tests publishes a pre-release, and every push to `release` publishes a release
 ([.github/workflows/ci-release.yml](.github/workflows/ci-release.yml), packaged by

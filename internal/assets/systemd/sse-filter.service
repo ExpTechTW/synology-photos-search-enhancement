@@ -11,8 +11,8 @@ User=$user
 Group=$group
 RuntimeDirectory=sse
 RuntimeDirectoryMode=0750
-# DSM 內建的 Python（只用標準庫）：venv 壞掉或被 DSM 更新清掉時 filter 照樣能跑
-ExecStart=$python -I $prefix/sse-filter.py --config $filter_config
+# 跟索引與搜尋服務是同一個執行檔（靜態連結，不依賴 DSM 的任何程式庫）
+ExecStart=$binary filter --config $filter_config
 Restart=always
 RestartSec=2
 TimeoutStopSec=40
