@@ -72,20 +72,66 @@ def start(st, name):
     return 0
 
 
+def parse_duration(raw):
+    """systemd 的時間：純數字是秒（20），也可以是 20s、1min。看不懂就用預設 90 秒。"""
+    s = (raw or "").strip().lower()
+    i = 0
+    while i < len(s) and (s[i].isdigit() or s[i] == "."):
+        i += 1
+    if i == 0:
+        return 90.0
+    try:
+        n = float(s[:i])
+    except ValueError:
+        return 90.0
+    mult = {"": 1, "s": 1, "us": 1e-6, "ms": 1e-3, "m": 60, "min": 60, "h": 3600}.get(s[i:].strip())
+    if mult is None:
+        return 90.0
+    return n * mult
+
+
+def _dead(pid):
+    try:
+        got, _ = os.waitpid(pid, os.WNOHANG)
+        if got:
+            return True
+    except ChildProcessError:
+        return not alive(pid)
+    return not alive(pid)
+
+
+def _wait_dead(pid, timeout):
+    """等 pid 結束。timeout 為 None 時一直等到結束。回傳是否已結束。"""
+    end = None if timeout is None else time.monotonic() + timeout
+    while not _dead(pid):
+        if end is not None and time.monotonic() >= end:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def stop(st, name):
     if name in st["active"]:
         st["active"].remove(name)
     pid = st["pids"].pop(name, None)
     if pid and alive(pid):
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(400):
+        # 跟 systemd 一樣：先 SIGTERM，過了 TimeoutStopSec（沒寫是 90 秒）再 SIGKILL。
+        limit = 90.0
+        unit = os.path.join(UNITS, name)
+        if os.path.exists(unit):
+            limit = parse_duration(unit_conf(name).get("TimeoutStopSec", "90"))
+        if os.environ.get("FAKE_STOP_TIMEOUT"):   # 測試結束時清理用：不必等
+            limit = float(os.environ["FAKE_STOP_TIMEOUT"])
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        if not _wait_dead(pid, limit):
             try:
-                if os.waitpid(pid, os.WNOHANG)[0]:
-                    break
-            except ChildProcessError:
-                if not alive(pid):
-                    break
-            time.sleep(0.1)
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            _wait_dead(pid, None)
     if os.path.exists(os.path.join(UNITS, name)):
         rd = unit_conf(name).get("RuntimeDirectory")
         if rd:

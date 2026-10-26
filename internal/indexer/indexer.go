@@ -467,8 +467,20 @@ func (ix *Indexer) healthy(cause error, column string) bool {
 	}
 }
 
+// aborted：client 的 context 已取消（收到停止信號）。這次失敗是要停下來，不是這張照片的問題。
+func (ix *Indexer) aborted() bool {
+	if ix.llm != nil && ix.llm.Ctx != nil && ix.llm.Ctx.Err() != nil {
+		return true
+	}
+	return ix.dsm != nil && ix.dsm.Ctx != nil && ix.dsm.Ctx.Err() != nil
+}
+
 // recordFailure：照片本身的問題計入重試次數；服務真的有問題則回傳 ServiceDownError（整體暫停）。
+// 正在停止時原樣回傳錯誤，不計入重試、也不記「失敗」，讓 Loop 結束。
 func (ix *Indexer) recordFailure(column string, uid int64, ck string, cause error) error {
+	if ix.aborted() {
+		return cause
+	}
 	if Transient(cause) && !ix.healthy(cause, column) {
 		return &ServiceDownError{cause}
 	}
@@ -711,6 +723,9 @@ func (ix *Indexer) TextEmbedPending() (int, error) {
 		}
 		v, err := ix.llm.EmbedText(r.text)
 		if err != nil {
+			if ix.aborted() {
+				return 0, err
+			}
 			if Transient(err) && !ix.healthy(err, "emb") {
 				return 0, &ServiceDownError{err}
 			}
@@ -842,6 +857,10 @@ func (ix *Indexer) loop(stop <-chan struct{}) error {
 			return nil
 		default:
 		}
+		if ix.aborted() {
+			ix.Progress.Set("stopped", nil)
+			return nil
+		}
 		err := func() error {
 			now := float64(time.Now().Unix())
 			if now >= nextFull {
@@ -887,6 +906,10 @@ func (ix *Indexer) loop(stop <-chan struct{}) error {
 		var om *OwnerMismatchError
 		if errors.As(err, &om) {
 			return err
+		}
+		if ix.aborted() {
+			ix.Progress.Set("stopped", nil)
+			return nil
 		}
 		backoff = min(600, max(30, backoff*2))
 		var sd *ServiceDownError

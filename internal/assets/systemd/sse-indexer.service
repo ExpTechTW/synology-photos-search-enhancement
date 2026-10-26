@@ -12,6 +12,8 @@ Restart=on-failure
 RestartSec=60
 # 2 = 資料庫屬於另一個帳號，重啟也沒用
 RestartPreventExitStatus=2
+# 停止後 20 秒沒結束就 SIGKILL。寫入都在交易裡，做到一半被殺掉的照片下次會重做。
+TimeoutStopSec=20
 Nice=10
 IOSchedulingClass=idle
 NoNewPrivileges=yes

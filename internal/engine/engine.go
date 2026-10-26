@@ -12,6 +12,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -308,7 +309,8 @@ func cmdIndex(cfg *config.Config, o options) (int, error) {
 	defer d.Close()
 	dsm := makeDSM(cfg)
 	defer dsm.Logout()
-	ix := indexer.New(cfg, dsm, llm.FromConfig(cfg), d)
+	client := llm.FromConfig(cfg)
+	ix := indexer.New(cfg, dsm, client, d)
 	if o.flags["--once"] {
 		_, hasFull, _ := db.GetMeta(d, "last_full_scan")
 		if err := ix.RunOnce(o.flags["--full"] || !hasFull); err != nil {
@@ -322,7 +324,16 @@ func cmdIndex(cfg *config.Config, o options) (int, error) {
 		fmt.Println(string(b))
 		return 0, nil
 	}
-	if err := ix.Loop(stopOnSignal()); err != nil {
+	// 停止信號一來就取消進行中的 HTTP：卡在模型或 DSM 請求時也能自己結束，不必等 systemd SIGKILL。
+	stop := stopOnSignal()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-stop
+		cancel()
+	}()
+	dsm.Ctx, client.Ctx = ctx, ctx
+	if err := ix.Loop(stop); err != nil {
 		logs.Get("sse.indexer").Errorf("%v", err)
 		return ownerExit(err), nil
 	}

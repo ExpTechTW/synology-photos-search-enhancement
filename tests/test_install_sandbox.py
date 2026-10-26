@@ -172,7 +172,8 @@ http {
     def tearDownClass(cls):
         r = cls.root
         if os.path.exists(os.path.join(r, "bin/systemctl")):
-            subprocess.run([os.path.join(r, "bin/systemctl"), "stop"] + list(UNITS), env=dict(os.environ, SSE_ROOT=r))
+            subprocess.run([os.path.join(r, "bin/systemctl"), "stop"] + list(UNITS),
+                           env=dict(os.environ, SSE_ROOT=r, FAKE_STOP_TIMEOUT="1"))
         if os.path.exists(os.path.join(r, "run/nginx.pid")):
             subprocess.run([os.path.join(r, "bin/nginx"), "-c", cls.conf_path, "-s", "stop"])
         if cls.fake:
@@ -648,8 +649,10 @@ http {
         for d in ("venv/bin", "python/cpython-3.12", "bin", "cache"):
             os.makedirs(os.path.join(prefix, d), exist_ok=True)
         py = os.path.join(prefix, "venv/bin/python")
-        # 舊的服務只要跑得起來；舊的 install.sh 會用它問目前的版本（python -I -c 'import sse; print(sse.__version__)'）
-        self.write(py, '#!/bin/sh\n[ "$2" = -c ] && { echo 2026.10.20+build.1; exit 0; }\nexec sleep 3600\n', 0o755)
+        # 舊的服務只要跑得起來；舊的 install.sh 會用它問目前的版本（python -I -c 'import sse; print(sse.__version__)'）。
+        # 當服務跑的時候忽略 SIGTERM（卡在請求裡不結束），重現升級時要等 systemd SIGKILL；-c 問版本仍立刻回答。
+        self.write(py, '#!/bin/sh\n[ "$2" = -c ] && { echo 2026.10.20+build.1; exit 0; }\n'
+                   "trap '' TERM\nexec sleep 3600\n", 0o755)
         for name in ("sse-filter.py", "bin/uv"):
             self.write(os.path.join(prefix, name), "# Python 版\n", 0o755)
         # Python 版最後一版（v2026.10.25+build.8）的 install.sh，sudo sse update 執行的就是它

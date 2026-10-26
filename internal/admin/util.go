@@ -63,8 +63,9 @@ func run(argv []string, timeout time.Duration) (int, string) {
 	return 127, err.Error()
 }
 
+// 停止與重啟會等 unit 的 TimeoutStopSec；升級時舊的 unit 可能還是預設的 90 秒，所以留 3 分鐘。
 func systemctl(args ...string) (int, string) {
-	return run(append([]string{paths.Systemctl}, args...), 60*time.Second)
+	return run(append([]string{paths.Systemctl}, args...), 3*time.Minute)
 }
 
 // DSM 7.3 是 systemd 219，還沒有 `enable --now` / `disable --now`（220 才有），所以分成兩步
@@ -81,6 +82,10 @@ func disableNow(units ...string) (int, string) {
 }
 
 // runChild 執行另一個 sse（新版），沿用目前的終端機；Ctrl-C 交給它處理。
+// deferRestartEnv：安裝程式換程式後執行子程序 sse install 時設定（值是一個檔案路徑，子程序開始改動系統時建立它）。
+// 子程序回復時不重啟服務，由外層換回舊程式後才重啟一次。
+const deferRestartEnv = "SSE_DEFER_RESTART"
+
 func runChild(bin string, args ...string) int {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

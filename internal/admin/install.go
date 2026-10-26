@@ -94,7 +94,15 @@ func selfInstall(g app.Global, args []string) int {
 	if g.Verbose {
 		childArgs = []string{"-v", "install"}
 	}
+	// 失敗時由這裡換回舊程式後只重啟一次服務；子程序的回復就不重啟（否則會重啟兩次，每次都要等舊的服務停下來）。
+	// 子程序開始改動系統時會建立 changed；在安裝前檢查就失敗時服務沒動過，不必重啟
+	changed := filepath.Join(paths.Prefix, ".install-changed")
+	os.Remove(changed)
+	os.Setenv(deferRestartEnv, changed)
 	rc := runChild(paths.Binary, append(childArgs, args...)...)
+	os.Unsetenv(deferRestartEnv)
+	touched := exists(changed)
+	os.Remove(changed)
 	if rc == 0 {
 		remove(prev)
 		return 0
@@ -111,9 +119,11 @@ func selfInstall(g app.Global, args []string) int {
 		} else {
 			remove(paths.Binary) // 原本是 Python 版：服務已經改回用 Python 執行
 		}
-		for _, u := range binaryUnits {
-			if exists(filepath.Join(paths.UnitDir, u)) {
-				systemctl("restart", u)
+		if touched {
+			for _, u := range binaryUnits {
+				if exists(filepath.Join(paths.UnitDir, u)) {
+					systemctl("restart", u)
+				}
 			}
 		}
 	}
@@ -425,6 +435,9 @@ func install(o installOpts) int {
 	}
 
 	sayf("\n%s中：", verb)
+	if m := os.Getenv(deferRestartEnv); m != "" {
+		os.WriteFile(m, nil, 0o644) // 告訴外層：系統已經動過，失敗時要重啟服務
+	}
 	var newState *state.State
 	err := func() (err error) {
 		defer func() {
@@ -475,6 +488,7 @@ func install(o installOpts) int {
 		}
 		ok("guard 已啟用（DSM 重新產生 nginx.conf 時自動重新套用）")
 		sysctl(append([]string{"enable"}, engineUnits...)...)
+		say("  … 重新啟動索引器與搜尋服務（舊的索引器要等手上的請求結束，最多約 20 秒）")
 		sysctl(append([]string{"restart"}, engineUnits...)...)
 		ping := waitEngine(cfg.Search.Socket)
 		ok(fmt.Sprintf("索引器與搜尋服務已啟動（目前索引 %d 張）", pingItems(ping)))
@@ -567,7 +581,7 @@ func rollback(fresh bool, written []saved, nginxChanged bool, probeURL string, n
 		}})
 	}
 	steps = append(steps, step{"重新載入 systemd", ignore(func() { systemctl("daemon-reload") })})
-	if !fresh {
+	if !fresh && os.Getenv(deferRestartEnv) == "" {
 		steps = append(steps, step{"用舊版重新啟動服務", ignore(func() {
 			systemctl(append([]string{"restart", filterUnit}, engineUnits...)...)
 		})})

@@ -4,6 +4,7 @@ package indexer_test
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -608,6 +609,52 @@ func TestBrokenPhotoRetriesThenGivesUp(t *testing.T) {
 	}
 	if a, b, _ := db.RequeueFailed(d); a != 1 || b != 0 {
 		t.Errorf("requeue = %d %d", a, b)
+	}
+}
+
+// 模型請求進行中收到停止：要在幾秒內結束，而且不能把這張照片記成失敗。
+func TestLoopStopsWhileEmbedding(t *testing.T) {
+	e := newEnv(t)
+	e.llm.Delay = 30 * time.Second
+	d, err := db.Open(e.cfg.Index.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	c := e.cfg.Synology
+	dsm := synology.New(c.URL, c.Account, c.Password, false, 10*time.Second)
+	client := e.client()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dsm.Ctx, client.Ctx = ctx, ctx
+	ix := indexer.New(e.cfg, dsm, client, d)
+	ix.YieldToSearch = 0
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- ix.Loop(stop) }()
+	deadline := time.Now().Add(15 * time.Second)
+	for e.llm.MaxInflight["embed"] < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("embedding 請求沒有送出")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(stop)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Loop 沒有在 3 秒內結束")
+	}
+	var n int
+	if err := d.QueryRow("SELECT count(*) FROM item WHERE emb_tries>0").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("有 %d 筆 emb_tries>0", n)
 	}
 }
 

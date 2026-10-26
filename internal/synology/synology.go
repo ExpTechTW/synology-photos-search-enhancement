@@ -11,6 +11,7 @@ package synology
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,8 @@ func ImageMime(data []byte) string {
 type Client struct {
 	url, account, password string
 	http                   *http.Client
+	// Ctx：每個 HTTP 請求都跟著它取消（nil 等同 context.Background()）。索引器收到 SIGTERM 時用來立刻停。
+	Ctx context.Context
 
 	mu  sync.Mutex
 	sid string
@@ -96,11 +99,23 @@ func New(baseURL, account, password string, verifyTLS bool, timeout time.Duratio
 		http: &http.Client{Transport: tr, Timeout: timeout}}
 }
 
+func (c *Client) ctx() context.Context {
+	if c.Ctx != nil {
+		return c.Ctx
+	}
+	return context.Background()
+}
+
 // post 回傳 JSON 解出的內容；raw 為 true 且回應不是 JSON 時回傳原始 bytes。
 func (c *Client) post(params url.Values, raw bool) (map[string]any, []byte, error) {
 	api, method := params.Get("api"), params.Get("method")
-	resp, err := c.http.Post(c.url+"/webapi/entry.cgi", "application/x-www-form-urlencoded",
+	req, err := http.NewRequestWithContext(c.ctx(), http.MethodPost, c.url+"/webapi/entry.cgi",
 		strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, nil, &Error{API: api, Method: method, Detail: err.Error(), Transient: true}
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, nil, &Error{API: api, Method: method, Detail: err.Error(), Transient: true}
 	}

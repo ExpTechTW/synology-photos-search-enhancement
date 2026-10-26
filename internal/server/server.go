@@ -329,7 +329,16 @@ func (s *Server) Serve(stop <-chan struct{}) error {
 		if err != nil {
 			select {
 			case <-done:
-				wg.Wait()
+				// 進行中的搜尋最多再等 5 秒。查詢的 embedding 可能很久，不能拖住 systemd 的停止。
+				finished := make(chan struct{})
+				go func() {
+					wg.Wait()
+					close(finished)
+				}()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+				}
 				s.Index.Close()
 				log.Infof("搜尋服務已停止")
 				return nil

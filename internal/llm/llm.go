@@ -12,6 +12,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,8 @@ type Client struct {
 	OCRExtraBody map[string]any
 	OCRMaxTokens int
 	LockDir      string // 空白 = 不用鎖檔（測試）
+	// Ctx：每個 HTTP 請求都跟著它取消（nil 等同 context.Background()）。索引器收到 SIGTERM 時用來立刻停。
+	Ctx context.Context
 }
 
 // FromConfig 依設定建立 client；鎖檔放在資料庫旁邊。
@@ -100,9 +103,16 @@ func (c *Client) oneAtATime(kind string) func() {
 	return func() { f.Close() }
 }
 
+func (c *Client) ctx() context.Context {
+	if c.Ctx != nil {
+		return c.Ctx
+	}
+	return context.Background()
+}
+
 func (c *Client) post(ep *Endpoint, path string, body any) (map[string]any, error) {
 	data, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", ep.Base+path, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(c.ctx(), "POST", ep.Base+path, bytes.NewReader(data))
 	if err != nil {
 		return nil, &Error{Msg: fmt.Sprintf("%s 連線失敗：%v", path, err), Transient: true}
 	}
