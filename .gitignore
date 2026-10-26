@@ -9,3 +9,5 @@ dist/
 # 有密碼與 API key，不要提交 / contains secrets
 config.yml
 !sse/data/config.example.yml
+build/
+dist/
