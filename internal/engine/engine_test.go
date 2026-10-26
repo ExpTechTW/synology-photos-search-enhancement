@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -163,6 +164,13 @@ func TestIndexerAlive(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+		// Linux 上 exec 剛完成時 /proc/<pid>/cmdline 可能還是空的：等它出現新的參數再檢查
+		path := fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid)
+		for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+			if b, err := os.ReadFile(path); err != nil || strings.HasPrefix(string(b), name+"\x00") {
+				break
+			}
+		}
 		return cmd
 	}
 	idx := sleeper("/usr/local/sse/sse", "--config", "x.yml", "index")
