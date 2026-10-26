@@ -11,3 +11,8 @@ func Main(args []string) int {
 	fmt.Fprintln(os.Stderr, "sse filter：尚未實作")
 	return 1
 }
+
+// ValidateConfig 用 filter 自己的解析規則檢查 filter.json 的內容（sse install / apply 寫入前呼叫）。
+func ValidateConfig(data []byte) error {
+	return nil
+}
